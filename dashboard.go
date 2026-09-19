@@ -12,200 +12,200 @@ import (
 	"time"
 )
 
-// ---------- varredura completa ----------
+// ---------- full scan ----------
 
-type resultadoDispositivo struct {
-	Nome, IP, MAC, Risco string
-	Fabricante           string
-	TipoProvavel         string
-	Hostname             string
-	Portas               []string // texto formatado pra exibir no dashboard
-	PortasNumeros        []string // só os números, pra comparar entre varreduras
-	Isolado              bool
-	PacotesEnviados      int64
-	BloqueioV4Ativo      bool  // true só se a regra de DROP no iptables realmente existe agora
-	BloqueioV6Ativo      bool  // idem pro ip6tables (defesa extra além do RA falso)
-	Confiavel            bool  // marcado manualmente — suprime alertas de mudança de risco
-	PacotesBloqueados    int64 // contador real do iptables, não só o de pacotes ARP enviados
-	SistemaProvavel      string
-	ForaDaSubRede        bool // veio de uma faixa de REDES_EXTRAS: dá pra ver, não dá pra isolar
+type deviceResult struct {
+	Name, IP, MAC, Risk string
+	Vendor              string
+	ProbableType        string
+	Hostname            string
+	Ports               []string // formatted text for the dashboard
+	PortNumbers         []string // just the numbers, to compare between scans
+	Isolated            bool
+	SentPackets         int64
+	IPv4BlockActive     bool  // true only if the iptables DROP rule really exists right now
+	IPv6BlockActive     bool  // same for ip6tables (extra defence beyond the forged RA)
+	Trusted             bool  // set by hand — suppresses risk-change alerts
+	BlockedPackets      int64 // the real iptables counter, not the ARP packets we sent
+	ProbableOS          string
+	OutsideSubnet       bool // came from a REDES_EXTRAS range: visible, but not containable
 }
 
-// limiteHosts teto de hosts processados ao mesmo tempo. Cada host abre
-// até 17 conexões TCP na varredura de portas, então sem teto uma rede
-// com 100 aparelhos tentaria 1700 conexões simultâneas.
-const limiteHosts = 24
+// maxHosts caps how many hosts are processed at once. Each host opens up
+// to 17 TCP connections during the port scan, so without a cap a network
+// with 100 devices would attempt 1700 simultaneous connections.
+const maxHosts = 24
 
-func escanear(rede *infoRede) []resultadoDispositivo {
-	candidatos := hostsParaVarrer(rede)
-	hosts, ttls := findActiveHosts(candidatos)
-	tabelaARP := lerTabelaARP(rede.Interface)
-	verificarSpoofingDoGateway(rede, tabelaARP)
-	detectarMACDuplicado(rede, tabelaARP)
+func scanNetwork(network *networkInfo) []deviceResult {
+	candidates := hostsToScan(network)
+	hosts, ttls := findActiveHosts(candidates)
+	arpTable := readARPTable(network.Interface)
+	checkGatewaySpoofing(network, arpTable)
+	detectDuplicateMAC(network, arpTable)
 
-	// Alguns dispositivos (Windows, principalmente) bloqueiam ping por
-	// padrão no firewall e nunca apareceriam só com findActiveHosts.
-	// Mas resolver o IP pra mandar o ping já força o kernel a mandar um
-	// ARP request antes — isso quase nunca é bloqueado — então qualquer
-	// IP que ficou na tabela ARP também conta como "ativo", mesmo sem
-	// ter respondido ao ping.
-	vistos := make(map[string]bool, len(hosts))
+	// Some devices (Windows especially) block ping by default in their
+	// local firewall and would never show up through findActiveHosts
+	// alone. But resolving the IP to send the ping already forces the
+	// kernel to emit an ARP request first — that is almost never blocked
+	// — so any IP left in the ARP table also counts as active, even
+	// without having answered the ping.
+	seen := make(map[string]bool, len(hosts))
 	for _, h := range hosts {
-		vistos[h] = true
+		seen[h] = true
 	}
-	for ip := range tabelaARP {
-		if !vistos[ip] && rede.IPNet.Contains(net.ParseIP(ip)) {
+	for ip := range arpTable {
+		if !seen[ip] && network.IPNet.Contains(net.ParseIP(ip)) {
 			hosts = append(hosts, ip)
-			vistos[ip] = true
+			seen[ip] = true
 		}
 	}
 
-	// processa cada host em paralelo: port scan (17 portas), reverse DNS
-	// (até 300ms) e checagens de iptables pra isolados eram feitas uma
-	// de cada vez, então o tempo do ciclo inteiro crescia com o número
-	// de dispositivos — numa rede com vários aparelhos, isso empurrava
-	// o ciclo de "a cada 20s" pra bem mais que isso. Em paralelo, o
-	// tempo do ciclo fica limitado pelo host mais lento, não pela soma.
+	// Process each host in parallel: the port scan (17 ports), the reverse
+	// DNS lookup (up to 300ms) and the iptables checks for isolated
+	// devices used to run one at a time, so the whole cycle grew with the
+	// number of devices — on a network with several of them, that pushed
+	// the "every 20s" cycle well past 20s. In parallel the cycle is bound
+	// by the slowest host, not by the sum of all of them.
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	vagas := make(chan struct{}, limiteHosts)
-	var resultados []resultadoDispositivo
+	slots := make(chan struct{}, maxHosts)
+	var results []deviceResult
 	for _, host := range hosts {
-		if host == rede.IP.String() {
-			continue // não faz sentido escanear/isolar o próprio notebook
+		if host == network.IP.String() {
+			continue // no point scanning or isolating the laptop itself
 		}
-		if host == rede.Gateway.String() {
-			continue // isolar o roteador derrubaria a internet de toda a rede
+		if host == network.Gateway.String() {
+			continue // isolating the router would take the whole network down
 		}
 		wg.Add(1)
 		go func(host string) {
 			defer wg.Done()
-			vagas <- struct{}{}
-			defer func() { <-vagas }()
+			slots <- struct{}{}
+			defer func() { <-slots }()
 
-			r := resultadoDispositivo{Nome: host, IP: host}
-			r.ForaDaSubRede = !rede.IPNet.Contains(net.ParseIP(host))
-			r.SistemaProvavel = classificarSOPorTTL(ttls[host])
-			if mac, ok := tabelaARP[host]; ok {
+			r := deviceResult{Name: host, IP: host}
+			r.OutsideSubnet = !network.IPNet.Contains(net.ParseIP(host))
+			r.ProbableOS = classifyOSByTTL(ttls[host])
+			if mac, ok := arpTable[host]; ok {
 				r.MAC = mac.String()
-				r.Fabricante, r.TipoProvavel = identificarPorMAC(r.MAC)
-				r.Confiavel = ehConfiavel(r.MAC)
+				r.Vendor, r.ProbableType = lookupByMAC(r.MAC)
+				r.Trusted = isTrusted(r.MAC)
 			}
-			r.Hostname = resolverHostname(host)
-			if tipo := refinarTipoPorHostname(r.Hostname); tipo != "" {
-				r.TipoProvavel = tipo
+			r.Hostname = resolveHostname(host)
+			if t := refineTypeByHostname(r.Hostname); t != "" {
+				r.ProbableType = t
 			}
-			// mDNS/SSDP são o sinal mais forte (o próprio dispositivo se
-			// anunciando), por isso têm prioridade sobre MAC OUI e hostname.
-			if tipo := tipoPorMDNS(host); tipo != "" {
-				r.TipoProvavel = tipo
+			// mDNS/SSDP are the strongest signal (the device announcing
+			// itself), so they take priority over the MAC OUI and hostname
+			if t := typeByMDNS(host); t != "" {
+				r.ProbableType = t
 			}
-			if tipo := tipoPorSSDP(host); tipo != "" {
-				r.TipoProvavel = tipo
+			if t := typeBySSDP(host); t != "" {
+				r.ProbableType = t
 			}
 
-			piorRisco := ""
-			if r.Confiavel {
-				// dispositivo já revisado e marcado como confiável — pula
-				// a varredura de portas pra não gastar ciclo com ele.
-				// Trade-off consciente: se ele for comprometido depois e
-				// abrir uma porta nova, isso não vai ser detectado até
-				// alguém desmarcar a confiança e escanear de novo.
-				r.Portas = append(r.Portas, "Varredura de portas pulada — dispositivo marcado como confiável.")
-				piorRisco = "baixo"
+			worstRisk := ""
+			if r.Trusted {
+				// already reviewed and marked as trusted — skip the port
+				// scan so the cycle does not spend time on it. A conscious
+				// trade-off: if it gets compromised later and opens a new
+				// port, that will not be detected until someone unmarks the
+				// trust and scans again.
+				r.Ports = append(r.Ports, "Varredura de portas pulada — dispositivo marcado como confiável.")
+				worstRisk = "baixo"
 			} else {
-				portasAtivas := portasAbertas(host)
-				for _, p := range portasAtivas {
-					r.Portas = append(r.Portas, fmt.Sprintf("%s (%s): %s", p.number, p.service, p.explicacao))
-					r.PortasNumeros = append(r.PortasNumeros, p.number)
-					if piorRisco == "" || riskLevel[p.risk] > riskLevel[piorRisco] {
-						piorRisco = p.risk
+				activePorts := openPorts(host)
+				for _, p := range activePorts {
+					r.Ports = append(r.Ports, fmt.Sprintf("%s (%s): %s", p.number, p.service, p.explanation))
+					r.PortNumbers = append(r.PortNumbers, p.number)
+					if worstRisk == "" || riskLevel[p.risk] > riskLevel[worstRisk] {
+						worstRisk = p.risk
 					}
 				}
-				for _, p := range portasAtivas {
+				for _, p := range activePorts {
 					if p.number != "443" {
 						continue
 					}
-					if problema := verificarCertificadoTLS(host); problema != "" {
-						r.Portas = append(r.Portas, fmt.Sprintf("443 (HTTPS): %s", problema))
-						if riskLevel["médio"] > riskLevel[piorRisco] {
-							piorRisco = "médio"
+					if problem := checkTLSCertificate(host); problem != "" {
+						r.Ports = append(r.Ports, fmt.Sprintf("443 (HTTPS): %s", problem))
+						if riskLevel["médio"] > riskLevel[worstRisk] {
+							worstRisk = "médio"
 						}
 					}
 					break
 				}
 			}
-			if piorRisco == "" {
-				piorRisco = "baixo"
+			if worstRisk == "" {
+				worstRisk = "baixo"
 			}
-			r.Risco = piorRisco
+			r.Risk = worstRisk
 
-			// Últimos recursos de identificação, só quando OUI, hostname,
-			// mDNS e SSDP não classificaram o tipo. As portas abertas
-			// (sinal funcional) têm prioridade sobre o palpite de MAC
-			// aleatório (que só diz que é um dispositivo pessoal com
-			// privacidade de MAC ligada, sem dizer qual).
-			if r.TipoProvavel == "" {
-				if tipo := inferirTipoPorPortas(r.PortasNumeros); tipo != "" {
-					r.TipoProvavel = tipo
-				} else if macAleatorio(r.MAC) {
-					r.TipoProvavel = "📱 Provável celular/notebook (privacidade de MAC ligada)"
+			// Last-resort identification, only when OUI, hostname, mDNS and
+			// SSDP did not classify the type. Open ports (a functional
+			// signal) take priority over the randomized-MAC guess, which
+			// only says it is a personal device with MAC privacy on,
+			// without saying which.
+			if r.ProbableType == "" {
+				if t := inferTypeByPorts(r.PortNumbers); t != "" {
+					r.ProbableType = t
+				} else if isRandomizedMAC(r.MAC) {
+					r.ProbableType = "📱 Provável celular/notebook (privacidade de MAC ligada)"
 				}
 			}
 
-			isolamentosMu.Lock()
-			estado, isolado := isolamentos[host]
-			isolamentosMu.Unlock()
-			if isolado {
-				r.Isolado = true
-				r.PacotesEnviados = atomic.LoadInt64(&estado.pacotes)
-				r.BloqueioV4Ativo = bloqueioIPv4Ativo(host)
-				r.PacotesBloqueados = pacotesBloqueados(host)
-				if estado.mac != nil {
-					r.BloqueioV6Ativo = bloqueioIPv6Ativo(estado.mac)
+			isolationsMu.Lock()
+			state, isolated := isolations[host]
+			isolationsMu.Unlock()
+			if isolated {
+				r.Isolated = true
+				r.SentPackets = atomic.LoadInt64(&state.packets)
+				r.IPv4BlockActive = ipv4BlockActive(host)
+				r.BlockedPackets = blockedPackets(host)
+				if state.mac != nil {
+					r.IPv6BlockActive = ipv6BlockActive(state.mac)
 				}
 			}
 
 			mu.Lock()
-			resultados = append(resultados, r)
+			results = append(results, r)
 			mu.Unlock()
 		}(host)
 	}
 	wg.Wait()
-	return resultados
+	return results
 }
 
-// ---------- dashboard web ----------
+// ---------- web dashboard ----------
 
-func paginaHTML(rede *infoRede, resultados []resultadoDispositivo, ultimaAtualizacao time.Time) string {
+func pageHTML(network *networkInfo, results []deviceResult, lastUpdate time.Time) string {
 	var cards strings.Builder
-	for _, r := range resultados {
-		cor := riskColor[r.Risco]
+	for _, r := range results {
+		color := riskColor[r.Risk]
 
-		var acao string
-		if r.Isolado {
-			confirmacao := fmt.Sprintf(`<div class="confirmado">🚫 %d pacote(s) bloqueado(s) pelo firewall até agora (contador real do iptables).</div>`, r.PacotesBloqueados)
-			if r.BloqueioV4Ativo {
-				confirmacao += `<div class="confirmado">✅ Bloqueio IPv4 confirmado ativo agora (checado no iptables, não só lembrado da memória).</div>`
+		var action string
+		if r.Isolated {
+			confirmation := fmt.Sprintf(`<div class="confirmado">🚫 %d pacote(s) bloqueado(s) pelo firewall até agora (contador real do iptables).</div>`, r.BlockedPackets)
+			if r.IPv4BlockActive {
+				confirmation += `<div class="confirmado">✅ Bloqueio IPv4 confirmado ativo agora (checado no iptables, não só lembrado da memória).</div>`
 			} else {
-				confirmacao += `<div class="alertaBloqueio">🚨 A regra de bloqueio IPv4 NÃO está mais no iptables! O dispositivo pode ter voltado a ter acesso à rede.</div>`
+				confirmation += `<div class="alertaBloqueio">🚨 A regra de bloqueio IPv4 NÃO está mais no iptables! O dispositivo pode ter voltado a ter acesso à rede.</div>`
 			}
-			if r.BloqueioV6Ativo {
-				confirmacao += `<div class="confirmado">✅ Bloqueio IPv6 (por MAC) confirmado ativo.</div>`
+			if r.IPv6BlockActive {
+				confirmation += `<div class="confirmado">✅ Bloqueio IPv6 (por MAC) confirmado ativo.</div>`
 			} else {
-				confirmacao += `<div class="alertaBloqueio">🚨 A regra de bloqueio IPv6 NÃO está mais no ip6tables.</div>`
+				confirmation += `<div class="alertaBloqueio">🚨 A regra de bloqueio IPv6 NÃO está mais no ip6tables.</div>`
 			}
-			acao = fmt.Sprintf(`
+			action = fmt.Sprintf(`
 			<div class="isolado">🔒 <b>Isolado via ARP spoofing + bloqueio no firewall (IPv4 e IPv6).</b> %d pacotes ARP forjados enviados até agora.</div>
 			%s
 			<form method="POST" action="/reconectar"><input type="hidden" name="ip" value="%s"><button class="btn btn-reconectar" type="submit">🔓 Reconectar à rede</button></form>`,
-				r.PacotesEnviados, confirmacao, r.IP)
-		} else if r.ForaDaSubRede {
-			acao = `<div class="erro">🌐 <b>Está em outra sub-rede.</b> Dá pra ver que existe e quais portas expõe, mas não dá pra descobrir o fabricante nem isolar: o ARP, que é o que sustenta as duas coisas, não atravessa roteador. Só um equipamento dentro daquela sub-rede conseguiria conter este dispositivo.</div>`
+				r.SentPackets, confirmation, r.IP)
+		} else if r.OutsideSubnet {
+			action = `<div class="erro">🌐 <b>Está em outra sub-rede.</b> Dá pra ver que existe e quais portas expõe, mas não dá pra descobrir o fabricante nem isolar: o ARP, que é o que sustenta as duas coisas, não atravessa roteador. Só um equipamento dentro daquela sub-rede conseguiria conter este dispositivo.</div>`
 		} else if r.MAC == "" {
-			acao = `<div class="erro">⚠️ MAC não resolvido ainda — atualize a página pra tentar isolar.</div>`
+			action = `<div class="erro">⚠️ MAC não resolvido ainda — atualize a página pra tentar isolar.</div>`
 		} else {
-			acao = fmt.Sprintf(`
+			action = fmt.Sprintf(`
 			<form method="POST" action="/isolar" class="formIsolar">
 				<input type="hidden" name="ip" value="%s">
 				<select name="duracao" class="seletorDuracao">
@@ -218,9 +218,9 @@ func paginaHTML(rede *infoRede, resultados []resultadoDispositivo, ultimaAtualiz
 			</form>`, r.IP)
 		}
 
-		portas := "<i>Nenhuma porta de risco encontrada.</i>"
-		if len(r.Portas) > 0 {
-			portas = "<ul><li>" + strings.Join(r.Portas, "</li><li>") + "</li></ul>"
+		ports := "<i>Nenhuma porta de risco encontrada.</i>"
+		if len(r.Ports) > 0 {
+			ports = "<ul><li>" + strings.Join(r.Ports, "</li><li>") + "</li></ul>"
 		}
 
 		mac := r.MAC
@@ -228,34 +228,34 @@ func paginaHTML(rede *infoRede, resultados []resultadoDispositivo, ultimaAtualiz
 			mac = "desconhecido"
 		}
 
-		var identificacao string
-		if r.TipoProvavel != "" || r.Hostname != "" || r.SistemaProvavel != "" || (r.Fabricante != "" && r.Fabricante != "Desconhecido") {
-			var partes []string
-			if r.TipoProvavel != "" {
-				partes = append(partes, fmt.Sprintf("<b>%s</b>", r.TipoProvavel))
+		var identification string
+		if r.ProbableType != "" || r.Hostname != "" || r.ProbableOS != "" || (r.Vendor != "" && r.Vendor != "Desconhecido") {
+			var parts []string
+			if r.ProbableType != "" {
+				parts = append(parts, fmt.Sprintf("<b>%s</b>", r.ProbableType))
 			}
-			if r.SistemaProvavel != "" {
-				partes = append(partes, r.SistemaProvavel)
+			if r.ProbableOS != "" {
+				parts = append(parts, r.ProbableOS)
 			}
 			if r.Hostname != "" {
-				partes = append(partes, fmt.Sprintf("nome na rede: %s", html.EscapeString(r.Hostname)))
+				parts = append(parts, fmt.Sprintf("nome na rede: %s", html.EscapeString(r.Hostname)))
 			}
-			if r.Fabricante != "" && r.Fabricante != "Desconhecido" {
-				partes = append(partes, fmt.Sprintf("fabricante: %s", r.Fabricante))
+			if r.Vendor != "" && r.Vendor != "Desconhecido" {
+				parts = append(parts, fmt.Sprintf("fabricante: %s", r.Vendor))
 			}
-			identificacao = fmt.Sprintf(`<div class="identificacao">%s</div>`, strings.Join(partes, " · "))
+			identification = fmt.Sprintf(`<div class="identificacao">%s</div>`, strings.Join(parts, " · "))
 		} else {
-			identificacao = `<div class="identificacao"><i>Tipo de dispositivo não identificado (MAC de fabricante desconhecido, sem hostname anunciado).</i></div>`
+			identification = `<div class="identificacao"><i>Tipo de dispositivo não identificado (MAC de fabricante desconhecido, sem hostname anunciado).</i></div>`
 		}
 
-		var confianca string
+		var trust string
 		if r.MAC != "" {
-			if r.Confiavel {
-				confianca = fmt.Sprintf(`
+			if r.Trusted {
+				trust = fmt.Sprintf(`
 				<div class="confiavel">✅ Marcado como confiável — mudanças de risco não vão mais gerar alerta no histórico.</div>
 				<form method="POST" action="/confiavel"><input type="hidden" name="ip" value="%s"><input type="hidden" name="confiavel" value="0"><button class="btn" style="background:#616161" type="submit">Remover da lista de confiança</button></form>`, r.IP)
 			} else {
-				confianca = fmt.Sprintf(`<form method="POST" action="/confiavel"><input type="hidden" name="ip" value="%s"><input type="hidden" name="confiavel" value="1"><button class="btn" style="background:#00695c" type="submit">✅ Marcar como confiável</button></form>`, r.IP)
+				trust = fmt.Sprintf(`<form method="POST" action="/confiavel"><input type="hidden" name="ip" value="%s"><input type="hidden" name="confiavel" value="1"><button class="btn" style="background:#00695c" type="submit">✅ Marcar como confiável</button></form>`, r.IP)
 			}
 		}
 
@@ -267,7 +267,7 @@ func paginaHTML(rede *infoRede, resultados []resultadoDispositivo, ultimaAtualiz
 			%s
 			%s
 			%s
-		</div>`, cor, r.IP, mac, cor, riskLabel[r.Risco], identificacao, portas, acao, confianca))
+		</div>`, color, r.IP, mac, color, riskLabel[r.Risk], identification, ports, action, trust))
 	}
 
 	return fmt.Sprintf(`<!DOCTYPE html>
@@ -331,103 +331,102 @@ func paginaHTML(rede *infoRede, resultados []resultadoDispositivo, ultimaAtualiz
     }, 4000);
   </script>
 </body>
-</html>`, rede.IPNet.String(), rede.Interface, rede.Gateway.String(), len(resultados), formatarQuando(ultimaAtualizacao), mapaSVG(rede, resultados), blocoWifiHTML(), blocoUPnPHTML(), cards.String())
+</html>`, network.IPNet.String(), network.Interface, network.Gateway.String(), len(results), formatWhen(lastUpdate), networkMapSVG(network, results), wifiBlockHTML(), upnpBlockHTML(), cards.String())
 }
 
-// blocoUPnPHTML mostra se o roteador está expondo alguma porta pra
-// internet via UPnP — o risco doméstico mais comum, e o mais invisível
-// pra um usuário leigo, já que acontece sem passar pelo dashboard.
-func blocoUPnPHTML() string {
-	mapeamentos, erro, ultimaChecagem := lerCacheUPnP()
+// upnpBlockHTML shows whether the router is exposing any port to the
+// internet through UPnP — the most common risk at home, and the most
+// invisible one to a non-technical user, since it happens without ever
+// passing through the dashboard.
+func upnpBlockHTML() string {
+	mappings, errMsg, lastCheck := readUPnPCache()
 
-	if ultimaChecagem.IsZero() {
+	if lastCheck.IsZero() {
 		return `<div class="painelUPnP neutro">🌐 Checagem de exposição UPnP ainda não rodou (roda a cada 2 minutos em segundo plano).</div>`
 	}
 
-	if erro != "" {
+	if errMsg != "" {
 		return fmt.Sprintf(`<div class="painelUPnP ok">✅ Nenhuma exposição UPnP encontrada — %s. (última checagem: %s)</div>`,
-			html.EscapeString(erro), formatarQuando(ultimaChecagem))
+			html.EscapeString(errMsg), formatWhen(lastCheck))
 	}
 
-	if len(mapeamentos) == 0 {
+	if len(mappings) == 0 {
 		return fmt.Sprintf(`<div class="painelUPnP ok">✅ O roteador fala UPnP, mas não tem nenhuma porta exposta pra internet agora. (última checagem: %s)</div>`,
-			formatarQuando(ultimaChecagem))
+			formatWhen(lastCheck))
 	}
 
-	var linhas strings.Builder
-	for _, m := range mapeamentos {
-		descricao := m.Descricao
-		if descricao == "" {
-			descricao = "sem descrição"
+	var lines strings.Builder
+	for _, m := range mappings {
+		description := m.Description
+		if description == "" {
+			description = "sem descrição"
 		}
-		linhas.WriteString(fmt.Sprintf("<li>porta externa <b>%s/%s</b> → %s:%s (%s)</li>",
-			html.EscapeString(m.Protocolo), html.EscapeString(m.PortaExterna),
-			html.EscapeString(m.IPInterno), html.EscapeString(m.PortaInterna), html.EscapeString(descricao)))
+		lines.WriteString(fmt.Sprintf("<li>porta externa <b>%s/%s</b> → %s:%s (%s)</li>",
+			html.EscapeString(m.Protocol), html.EscapeString(m.ExternalPort),
+			html.EscapeString(m.InternalIP), html.EscapeString(m.InternalPort), html.EscapeString(description)))
 	}
 	return fmt.Sprintf(`<div class="painelUPnP alerta">🚨 <b>%d porta(s) exposta(s) pra internet via UPnP</b> — qualquer um de fora consegue tentar acessar esses dispositivos. (última checagem: %s)<ul>%s</ul></div>`,
-		len(mapeamentos), formatarQuando(ultimaChecagem), linhas.String())
+		len(mappings), formatWhen(lastCheck), lines.String())
 }
 
-// blocoWifiHTML mostra a segurança da própria rede Wi-Fi que o
-// notebook está usando — algo que nenhuma varredura de dispositivo
-// consegue enxergar.
-func blocoWifiHTML() string {
-	ssid, protocolo, risco, motivo, ultimaChecagem := lerCacheWifi()
+// wifiBlockHTML shows the security of the Wi-Fi network the laptop is
+// using — something no device scan can see.
+func wifiBlockHTML() string {
+	ssid, protocol, risk, reason, lastCheck := readWifiCache()
 
-	if ultimaChecagem.IsZero() {
+	if lastCheck.IsZero() {
 		return `<div class="painelUPnP neutro">📶 Checagem de segurança do Wi-Fi ainda não rodou (ou a conexão não é Wi-Fi / nmcli indisponível).</div>`
 	}
 
-	classe := "neutro"
-	if risco == "baixo" {
-		classe = "ok"
-	} else if risco == "alto" {
-		classe = "alerta"
+	class := "neutro"
+	if risk == "baixo" {
+		class = "ok"
+	} else if risk == "alto" {
+		class = "alerta"
 	}
 	return fmt.Sprintf(`<div class="painelUPnP %s">📶 Wi-Fi <b>%s</b> (%s) — %s (última checagem: %s)</div>`,
-		classe, html.EscapeString(ssid), html.EscapeString(protocolo), html.EscapeString(motivo), formatarQuando(ultimaChecagem))
+		class, html.EscapeString(ssid), html.EscapeString(protocol), html.EscapeString(reason), formatWhen(lastCheck))
 }
 
-// formatarQuando devolve "há Xs"/"há Xmin" em vez de um timestamp cru,
-// mais fácil de ler rápido pro usuário leigo no dashboard.
-func formatarQuando(quando time.Time) string {
-	if quando.IsZero() {
+// formatWhen returns "há Xs"/"há Xmin" instead of a raw timestamp, which
+// a non-technical user can read at a glance in the dashboard.
+func formatWhen(when time.Time) string {
+	if when.IsZero() {
 		return "ainda não rodou"
 	}
-	decorrido := time.Since(quando)
+	elapsed := time.Since(when)
 	switch {
-	case decorrido < time.Minute:
-		return fmt.Sprintf("há %ds", int(decorrido.Seconds()))
+	case elapsed < time.Minute:
+		return fmt.Sprintf("há %ds", int(elapsed.Seconds()))
 	default:
-		return fmt.Sprintf("há %dmin", int(decorrido.Minutes()))
+		return fmt.Sprintf("há %dmin", int(elapsed.Minutes()))
 	}
 }
 
-// historicoHTML lista os eventos registrados, do mais recente pro mais
-// antigo — é a prova em texto do que aconteceu na rede ao longo do
-// tempo (dispositivos que apareceram/sumiram, riscos que mudaram,
-// isolamentos e reconexões).
-func historicoHTML() string {
-	historicoMu.Lock()
-	eventos := make([]eventoHistorico, len(historicoMem))
-	copy(eventos, historicoMem)
-	historicoMu.Unlock()
+// historyHTML lists the recorded events, newest first — the written proof
+// of what happened on the network over time (devices that appeared or
+// vanished, risks that changed, isolations and reconnections).
+func historyHTML() string {
+	historyMu.Lock()
+	events := make([]historyEvent, len(historyInMemory))
+	copy(events, historyInMemory)
+	historyMu.Unlock()
 
-	var linhas strings.Builder
-	if len(eventos) == 0 {
-		linhas.WriteString(`<tr><td colspan="3"><i>Nenhum evento registrado ainda — aguarde a próxima varredura.</i></td></tr>`)
+	var rows strings.Builder
+	if len(events) == 0 {
+		rows.WriteString(`<tr><td colspan="3"><i>Nenhum evento registrado ainda — aguarde a próxima varredura.</i></td></tr>`)
 	}
-	for i := len(eventos) - 1; i >= 0; i-- {
-		e := eventos[i]
-		rotulo := rotuloEvento[e.Tipo]
-		if rotulo == "" {
-			rotulo = e.Tipo
+	for i := len(events) - 1; i >= 0; i-- {
+		e := events[i]
+		label := eventLabel[e.Type]
+		if label == "" {
+			label = e.Type
 		}
-		linhas.WriteString(fmt.Sprintf(`<tr><td>%s</td><td>%s</td><td>%s — %s</td></tr>`,
-			html.EscapeString(e.Quando.Format("02/01 15:04:05")),
-			html.EscapeString(rotulo),
+		rows.WriteString(fmt.Sprintf(`<tr><td>%s</td><td>%s</td><td>%s — %s</td></tr>`,
+			html.EscapeString(e.When.Format("02/01 15:04:05")),
+			html.EscapeString(label),
 			html.EscapeString(e.IP),
-			html.EscapeString(e.Detalhe)))
+			html.EscapeString(e.Detail)))
 	}
 
 	return fmt.Sprintf(`<!DOCTYPE html>
@@ -455,106 +454,106 @@ func historicoHTML() string {
     %s
   </table>
 </body>
-</html>`, linhas.String())
+</html>`, rows.String())
 }
 
-func handler(rede *infoRede) http.HandlerFunc {
+func handler(network *networkInfo) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		resultados, ultimaAtualizacao := lerCache()
+		results, lastUpdate := readCache()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, paginaHTML(rede, resultados, ultimaAtualizacao))
+		fmt.Fprint(w, pageHTML(network, results, lastUpdate))
 	}
 }
 
-// atualizarHandler força uma nova varredura na hora (em vez de esperar
-// o próximo ciclo do monitoramento contínuo) — útil pra quem clica em
-// "forçar nova varredura" e quer ver o resultado imediatamente.
-func atualizarHandler(rede *infoRede) http.HandlerFunc {
+// refreshHandler forces a new scan right away (rather than waiting for the
+// next cycle of the continuous monitoring) — useful for whoever clicks
+// "force a new scan" and wants to see the result immediately.
+func refreshHandler(network *networkInfo) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		atualizarCache(rede)
+		refreshCache(network)
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	}
 }
 
-func historicoHandler(w http.ResponseWriter, r *http.Request) {
+func historyHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, historicoHTML())
+	fmt.Fprint(w, historyHTML())
 }
 
-// mapaHandler devolve só o SVG do mapa, pra ser buscado via JS e
-// atualizar o mapa sem recarregar a página inteira.
-func mapaHandler(rede *infoRede) http.HandlerFunc {
+// mapHandler returns just the map's SVG, to be fetched over JS and refresh
+// the map without reloading the whole page.
+func mapHandler(network *networkInfo) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		resultados, _ := lerCache()
+		results, _ := readCache()
 		w.Header().Set("Content-Type", "image/svg+xml; charset=utf-8")
-		fmt.Fprint(w, mapaSVG(rede, resultados))
+		fmt.Fprint(w, networkMapSVG(network, results))
 	}
 }
 
-func isolarHandler(rede *infoRede) http.HandlerFunc {
+func isolateHandler(network *networkInfo) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "método não permitido", http.StatusMethodNotAllowed)
 			return
 		}
 		ipStr := r.FormValue("ip")
-		alvoIP := net.ParseIP(ipStr).To4()
-		if alvoIP == nil {
+		targetIP := net.ParseIP(ipStr).To4()
+		if targetIP == nil {
 			http.Error(w, "IP inválido", http.StatusBadRequest)
 			return
 		}
-		mac, ok := lerTabelaARP(rede.Interface)[ipStr]
+		mac, ok := readARPTable(network.Interface)[ipStr]
 		if !ok {
 			http.Error(w, "MAC do dispositivo ainda não resolvido, tente escanear de novo", http.StatusConflict)
 			return
 		}
-		// duração escolhida pelo usuário no formulário, em minutos;
-		// 0 (ou valor inválido/ausente) significa "sem prazo".
-		var duracao time.Duration
-		if minutos, err := strconv.Atoi(r.FormValue("duracao")); err == nil && minutos > 0 {
-			duracao = time.Duration(minutos) * time.Minute
+		// duration chosen by the user in the form, in minutes; 0 (or a
+		// missing/invalid value) means "no deadline"
+		var duration time.Duration
+		if minutes, err := strconv.Atoi(r.FormValue("duracao")); err == nil && minutes > 0 {
+			duration = time.Duration(minutes) * time.Minute
 		}
-		if err := isolarDispositivo(rede, alvoIP, mac, duracao); err != nil {
+		if err := isolateDevice(network, targetIP, mac, duration); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		atualizarCache(rede)
+		refreshCache(network)
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	}
 }
 
-func reconectarHandler(rede *infoRede) http.HandlerFunc {
+func reconnectHandler(network *networkInfo) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "método não permitido", http.StatusMethodNotAllowed)
 			return
 		}
 		ip := r.FormValue("ip")
-		if err := reconectarDispositivo(ip, rede); err != nil {
+		if err := reconnectDevice(ip, network); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		atualizarCache(rede)
+		refreshCache(network)
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	}
 }
 
-// confiavelHandler marca ou desmarca um dispositivo como confiável,
-// identificado pelo MAC atual daquele IP.
-func confiavelHandler(rede *infoRede) http.HandlerFunc {
+// trustHandler marks or unmarks a device as trusted, identified by the MAC
+// currently answering for that IP.
+func trustHandler(network *networkInfo) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "método não permitido", http.StatusMethodNotAllowed)
 			return
 		}
 		ip := r.FormValue("ip")
-		mac, ok := lerTabelaARP(rede.Interface)[ip]
+		mac, ok := readARPTable(network.Interface)[ip]
 		if !ok {
 			http.Error(w, "MAC não resolvido ainda, tente escanear de novo", http.StatusConflict)
 			return
 		}
-		marcarConfiavel(mac.String(), r.FormValue("confiavel") == "1")
-		atualizarCache(rede)
+		setTrusted(mac.String(), r.FormValue("confiavel") == "1")
+		refreshCache(network)
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	}
 }

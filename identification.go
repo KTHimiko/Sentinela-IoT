@@ -8,19 +8,19 @@ import (
 	"time"
 )
 
-// ---------- identificação do tipo de dispositivo ----------
+// ---------- device type identification ----------
 
-// tabelaOUI mapeia os 3 primeiros bytes do MAC (o "OUI", registrado
-// junto ao IEEE) pro fabricante da placa de rede. Não é uma lista
-// completa (a IEEE registra dezenas de milhares de blocos) — cobre só
-// fabricantes comuns em casas/pequenas empresas, o suficiente pra dar
-// um palpite razoável no dashboard.
-type fabricanteInfo struct {
-	fabricante string
-	tipo       string
+// ouiTable maps the first 3 bytes of a MAC (the "OUI", registered with
+// the IEEE) to the vendor of the network card. It is not a complete list
+// — the IEEE registers tens of thousands of blocks — it only covers
+// vendors common in homes and small businesses, which is enough for a
+// reasonable guess in the dashboard.
+type vendorInfo struct {
+	vendor     string
+	deviceType string
 }
 
-var tabelaOUI = map[string]fabricanteInfo{
+var ouiTable = map[string]vendorInfo{
 	// notebooks/PCs
 	"00:1B:21": {"Intel Corporate", "💻 Computador (PC/notebook)"},
 	"3C:97:0E": {"Intel Corporate", "💻 Computador (PC/notebook)"},
@@ -102,42 +102,42 @@ var tabelaOUI = map[string]fabricanteInfo{
 	"08:00:27": {"Oracle VirtualBox", "🖥️ Máquina virtual"},
 }
 
-// identificarPorMAC procura o OUI (3 primeiros bytes) do MAC na tabela
-// e devolve o fabricante e um palpite de tipo de dispositivo. Se o MAC
-// não estiver na tabela (o caso mais comum, já que a lista é pequena),
-// devolve "Desconhecido" em vez de travar ou mentir uma classificação.
-func identificarPorMAC(mac string) (fabricante, tipo string) {
+// lookupByMAC looks the OUI (first 3 bytes) of the MAC up in the table
+// and returns the vendor plus a guess at the device type. When the MAC is
+// not in the table — the common case, since the list is small — it
+// returns "Desconhecido" instead of failing or inventing a classification.
+func lookupByMAC(mac string) (vendor, deviceType string) {
 	if len(mac) < 8 {
 		return "", ""
 	}
 	oui := strings.ToUpper(mac[:8])
-	if info, ok := tabelaOUI[oui]; ok {
-		return info.fabricante, info.tipo
+	if info, ok := ouiTable[oui]; ok {
+		return info.vendor, info.deviceType
 	}
 	return "Desconhecido", ""
 }
 
-// resolverHostname tenta descobrir o nome que o próprio dispositivo
-// anuncia na rede (reverse DNS/mDNS via resolver do sistema — muitos
-// roteadores registram o hostname que o dispositivo pede via DHCP,
-// tipo "iPhone-de-Maria" ou "DESKTOP-AB12CD"). Usa um timeout curto
-// pra não travar a varredura inteira num dispositivo que não responde.
-func resolverHostname(ip string) string {
+// resolveHostname tries to find the name the device announces on the
+// network (reverse DNS/mDNS through the system resolver — many routers
+// register the hostname the device asks for over DHCP, like
+// "iPhone-de-Maria" or "DESKTOP-AB12CD"). It uses a short timeout so one
+// unresponsive device cannot stall the whole scan.
+func resolveHostname(ip string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	nomes, err := (&net.Resolver{}).LookupAddr(ctx, ip)
-	if err != nil || len(nomes) == 0 {
+	names, err := (&net.Resolver{}).LookupAddr(ctx, ip)
+	if err != nil || len(names) == 0 {
 		return ""
 	}
-	return strings.TrimSuffix(nomes[0], ".")
+	return strings.TrimSuffix(names[0], ".")
 }
 
-// refinarTipoPorHostname procura palavras-chave comuns no hostname.
-// O hostname é um sinal mais específico que o fabricante do MAC (ex:
-// "iPhone-de-Luan" via Apple já cai no palpite certo, mas "DESKTOP-X1"
-// não teria como vir só do OUI), então tem prioridade sobre o OUI
-// quando bate com alguma palavra-chave conhecida.
-func refinarTipoPorHostname(hostname string) string {
+// refineTypeByHostname looks for common keywords in the hostname. The
+// hostname is a more specific signal than the MAC vendor ("iPhone-de-Luan"
+// under Apple already lands on the right guess, but "DESKTOP-X1" could
+// never come from the OUI alone), so it takes priority over the OUI
+// whenever it matches a known keyword.
+func refineTypeByHostname(hostname string) string {
 	h := strings.ToLower(hostname)
 	switch {
 	case h == "":
@@ -159,50 +159,50 @@ func refinarTipoPorHostname(hostname string) string {
 	}
 }
 
-// macAleatorio informa se o MAC tem o bit "localmente administrado"
-// ligado (segundo bit menos significativo do primeiro octeto) e o bit
-// multicast desligado. Celulares e notebooks modernos (iOS, Android,
-// Windows, Linux) trocam de MAC por rede Wi-Fi como recurso de
-// privacidade, e esses MACs sempre têm esse padrão. Como um MAC
-// aleatório nunca vai bater na tabela OUI (o bloco não é registrado no
-// IEEE), essa checagem recupera uma classe inteira de dispositivos que,
-// de outro modo, ficariam eternamente como "tipo não identificado".
-func macAleatorio(mac string) bool {
+// isRandomizedMAC reports whether the MAC has the "locally administered"
+// bit set (the second least significant bit of the first octet) and the
+// multicast bit clear. Modern phones and laptops (iOS, Android, Windows,
+// Linux) rotate their MAC per Wi-Fi network as a privacy feature, and
+// those MACs always follow this pattern. Since a randomized MAC can never
+// match the OUI table — the block is not registered with the IEEE — this
+// check recovers a whole class of devices that would otherwise stay
+// forever as "type not identified".
+func isRandomizedMAC(mac string) bool {
 	if len(mac) < 2 {
 		return false
 	}
-	primeiro, err := strconv.ParseUint(mac[0:2], 16, 8)
+	first, err := strconv.ParseUint(mac[0:2], 16, 8)
 	if err != nil {
 		return false
 	}
-	b := byte(primeiro)
-	const bitLocal = 0x02     // localmente administrado
-	const bitMulticast = 0x01 // endereço de grupo (não é de um dispositivo só)
-	return b&bitLocal != 0 && b&bitMulticast == 0
+	b := byte(first)
+	const localBit = 0x02     // locally administered
+	const multicastBit = 0x01 // group address (not a single device)
+	return b&localBit != 0 && b&multicastBit == 0
 }
 
-// inferirTipoPorPortas dá um palpite de tipo a partir dos serviços que
-// o dispositivo deixa abertos, usado só como último recurso, quando
-// OUI, hostname, mDNS e SSDP não disseram nada. As portas são um sinal
-// funcional (o que o aparelho faz), não de fabricante, então as regras
-// vão da mais específica pra mais genérica e param no primeiro acerto.
-func inferirTipoPorPortas(portas []string) string {
-	tem := make(map[string]bool, len(portas))
-	for _, p := range portas {
-		tem[p] = true
+// inferTypeByPorts guesses a device type from the services it leaves
+// open, used only as a last resort when OUI, hostname, mDNS and SSDP said
+// nothing. Ports are a functional signal (what the device does), not a
+// vendor one, so the rules go from most specific to most generic and stop
+// at the first match.
+func inferTypeByPorts(ports []string) string {
+	has := make(map[string]bool, len(ports))
+	for _, p := range ports {
+		has[p] = true
 	}
 	switch {
-	case tem["9100"]:
+	case has["9100"]:
 		return "🖨️ Impressora"
-	case tem["554"]:
+	case has["554"]:
 		return "🎥 Câmera IP"
-	case tem["445"] || tem["3389"]:
+	case has["445"] || has["3389"]:
 		return "💻 Computador (provável Windows)"
-	case tem["3306"] || tem["5432"]:
+	case has["3306"] || has["5432"]:
 		return "🗄️ Servidor de banco de dados"
-	case tem["23"]:
+	case has["23"]:
 		return "💡 Dispositivo IoT (Telnet aberto — comum em equipamento embarcado)"
-	case tem["22"] && !tem["80"] && !tem["443"]:
+	case has["22"] && !has["80"] && !has["443"]:
 		return "🖥️ Servidor/dispositivo com acesso SSH"
 	default:
 		return ""

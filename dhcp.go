@@ -11,26 +11,25 @@ import (
 	"github.com/google/gopacket/pcap"
 )
 
-// ---------- detecção de servidor DHCP não autorizado ----------
+// ---------- rogue DHCP server detection ----------
 
-// O ARP spoofing que já detectamos (verificarSpoofingDoGateway) exige
-// atacar dispositivo por dispositivo. Um servidor DHCP falso (rogue
-// DHCP) é mais poderoso: se alguém colocar um segundo servidor na rede
-// e ele responder mais rápido que o roteador de verdade, ele entrega
-// gateway/DNS forjado pra qualquer dispositivo novo que entrar na rede
-// dali pra frente — sem precisar envenenar ARP de ninguém. É um ataque
-// clássico de rede que nenhuma das nossas outras detecções cobre.
+// The ARP spoofing we already detect (checkGatewaySpoofing) has to be
+// aimed at one device at a time. A rogue DHCP server is more powerful: put
+// a second server on the network and, if it answers faster than the real
+// router, it hands a forged gateway and DNS to every new device that joins
+// from then on — with no need to poison anyone's ARP. It is a classic
+// network attack that none of our other detections covers.
 var dhcpMu sync.Mutex
-var dhcpServidoresConhecidos = make(map[string]bool)
-var dhcpPeriodoAprendizado = true
+var knownDHCPServers = make(map[string]bool)
+var dhcpLearningPeriod = true
 
-// iniciarDeteccaoDHCPFalso escuta passivamente o tráfego DHCP (portas
-// 67/68) e, nos primeiros 60s, aprende quais IPs já respondem como
-// servidor na rede — isso vira a "baseline" de confiança (dá conta até
-// de setups incomuns com mais de um servidor DHCP legítimo, contanto
-// que já estejam ativos desde o início). Depois desse período, qualquer
-// servidor novo que apareça gera um alerta.
-func iniciarDeteccaoDHCPFalso(iface string) {
+// startRogueDHCPDetection passively listens to DHCP traffic (ports 67 and
+// 68) and, during the first 60 seconds, learns which IPs already answer as
+// servers on the network — that becomes the trust baseline, and it even
+// copes with unusual setups that legitimately run more than one DHCP
+// server, as long as they are active from the start. After that period,
+// any new server showing up raises an alert.
+func startRogueDHCPDetection(iface string) {
 	handle, err := pcap.OpenLive(iface, 65536, false, pcap.BlockForever)
 	if err != nil {
 		fmt.Println("Detecção de DHCP falso desativada (não consegui abrir a interface):", err)
@@ -45,76 +44,76 @@ func iniciarDeteccaoDHCPFalso(iface string) {
 	go func() {
 		time.Sleep(60 * time.Second)
 		dhcpMu.Lock()
-		dhcpPeriodoAprendizado = false
-		total := len(dhcpServidoresConhecidos)
+		dhcpLearningPeriod = false
+		total := len(knownDHCPServers)
 		dhcpMu.Unlock()
 		fmt.Printf("Detecção de DHCP falso: %d servidor(es) legítimo(s) identificado(s) na rede, monitorando por novos\n", total)
 	}()
 
 	go func() {
 		defer handle.Close()
-		fonte := gopacket.NewPacketSource(handle, handle.LinkType())
-		for pacote := range fonte.Packets() {
-			dhcpCamada := pacote.Layer(layers.LayerTypeDHCPv4)
-			if dhcpCamada == nil {
+		source := gopacket.NewPacketSource(handle, handle.LinkType())
+		for packet := range source.Packets() {
+			dhcpLayer := packet.Layer(layers.LayerTypeDHCPv4)
+			if dhcpLayer == nil {
 				continue
 			}
-			dhcp, ok := dhcpCamada.(*layers.DHCPv4)
+			dhcp, ok := dhcpLayer.(*layers.DHCPv4)
 			if !ok || dhcp.Operation != layers.DHCPOpReply {
-				continue // só nos interessa resposta de servidor (OFFER/ACK), não pedido de cliente
+				continue // only server replies (OFFER/ACK) matter, not client requests
 			}
 
-			var tipo layers.DHCPMsgType
-			var gatewayOfertado, dnsOfertado string
+			var msgType layers.DHCPMsgType
+			var offeredGateway, offeredDNS string
 			for _, opt := range dhcp.Options {
 				switch opt.Type {
 				case layers.DHCPOptMessageType:
 					if len(opt.Data) == 1 {
-						tipo = layers.DHCPMsgType(opt.Data[0])
+						msgType = layers.DHCPMsgType(opt.Data[0])
 					}
 				case layers.DHCPOptRouter:
 					if len(opt.Data) >= 4 {
-						gatewayOfertado = net.IP(opt.Data[:4]).String()
+						offeredGateway = net.IP(opt.Data[:4]).String()
 					}
 				case layers.DHCPOptDNS:
 					if len(opt.Data) >= 4 {
-						dnsOfertado = net.IP(opt.Data[:4]).String()
+						offeredDNS = net.IP(opt.Data[:4]).String()
 					}
 				}
 			}
-			if tipo != layers.DHCPMsgTypeOffer && tipo != layers.DHCPMsgTypeAck {
+			if msgType != layers.DHCPMsgTypeOffer && msgType != layers.DHCPMsgTypeAck {
 				continue
 			}
 
-			camadaRede := pacote.NetworkLayer()
-			if camadaRede == nil {
+			networkLayer := packet.NetworkLayer()
+			if networkLayer == nil {
 				continue
 			}
-			servidor := camadaRede.NetworkFlow().Src().String()
+			server := networkLayer.NetworkFlow().Src().String()
 
 			dhcpMu.Lock()
-			if dhcpPeriodoAprendizado {
-				dhcpServidoresConhecidos[servidor] = true
+			if dhcpLearningPeriod {
+				knownDHCPServers[server] = true
 				dhcpMu.Unlock()
 				continue
 			}
-			jaConhecido := dhcpServidoresConhecidos[servidor]
-			if !jaConhecido {
-				dhcpServidoresConhecidos[servidor] = true
+			known := knownDHCPServers[server]
+			if !known {
+				knownDHCPServers[server] = true
 			}
 			dhcpMu.Unlock()
 
-			if !jaConhecido {
-				oferta := ""
-				if gatewayOfertado != "" {
-					oferta += fmt.Sprintf(" Está entregando o gateway %s", gatewayOfertado)
-					if dnsOfertado != "" {
-						oferta += fmt.Sprintf(" e o DNS %s", dnsOfertado)
+			if !known {
+				offer := ""
+				if offeredGateway != "" {
+					offer += fmt.Sprintf(" Está entregando o gateway %s", offeredGateway)
+					if offeredDNS != "" {
+						offer += fmt.Sprintf(" e o DNS %s", offeredDNS)
 					}
-					oferta += " — se esse gateway/DNS não for o do roteador legítimo, o tráfego de novos dispositivos está sendo desviado."
+					offer += " — se esse gateway/DNS não for o do roteador legítimo, o tráfego de novos dispositivos está sendo desviado."
 				}
-				registrarEvento("alerta_dhcp_falso", servidor, fmt.Sprintf(
-					"Um servidor DHCP novo (%s) começou a responder na rede — pode ser um roteador antigo religado por engano, ou um ataque de DHCP falso (rogue DHCP) tentando sequestrar o tráfego de novos dispositivos.%s", servidor, oferta))
+				recordEvent("alerta_dhcp_falso", server, fmt.Sprintf(
+					"Um servidor DHCP novo (%s) começou a responder na rede — pode ser um roteador antigo religado por engano, ou um ataque de DHCP falso (rogue DHCP) tentando sequestrar o tráfego de novos dispositivos.%s", server, offer))
 			}
 		}
 	}()

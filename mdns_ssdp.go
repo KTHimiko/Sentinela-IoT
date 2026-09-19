@@ -8,19 +8,18 @@ import (
 	"time"
 )
 
-// ---------- identificação via mDNS/SSDP ----------
+// ---------- identification through mDNS/SSDP ----------
 
-// Muito dispositivo IoT doméstico se anuncia sozinho na rede via mDNS
-// (porta 5353) — lâmpada, Chromecast, impressora, tudo isso "grita"
-// periodicamente o tipo de serviço que oferece, sem precisar de
-// ninguém perguntar. É um sinal bem mais forte que MAC OUI ou
-// hostname pra responder "isso é uma lâmpada inteligente de verdade".
-// Em vez de implementar um parser de DNS completo (mDNS usa o formato
-// de pacote DNS raw), procuramos só pelos marcadores de tipo de
-// serviço em texto puro dentro do pacote — eles aparecem como
-// substring legível mesmo dentro dos bytes binários, porque nomes de
-// serviço DNS-SD são só sequências de rótulos ASCII.
-var marcadoresServicoMDNS = []struct{ marcador, tipo string }{
+// Plenty of home IoT devices announce themselves on the network over mDNS
+// (port 5353) — a bulb, a Chromecast, a printer, all of them periodically
+// shout the kind of service they offer with nobody asking. That is a much
+// stronger signal than the MAC OUI or the hostname for answering "this
+// really is a smart bulb". Instead of implementing a full DNS parser (mDNS
+// uses the raw DNS packet format), we only look for the service-type
+// markers as plain text inside the packet: they show up as a readable
+// substring even among the binary bytes, because DNS-SD service names are
+// just sequences of ASCII labels.
+var mdnsServiceMarkers = []struct{ marker, deviceType string }{
 	{"_googlecast._tcp", "🔊 Assistente virtual / streaming (Chromecast/Google)"},
 	{"_airplay._tcp", "🔊 Assistente virtual / streaming (AirPlay)"},
 	{"_raop._tcp", "🔊 Assistente virtual / streaming (AirPlay áudio)"},
@@ -35,32 +34,32 @@ var marcadoresServicoMDNS = []struct{ marcador, tipo string }{
 	{"_home-sharing._tcp", "📺 Smart TV / media player"},
 }
 
-func identificarPorPacoteMDNS(pacote []byte) string {
-	texto := string(pacote)
-	for _, m := range marcadoresServicoMDNS {
-		if strings.Contains(texto, m.marcador) {
-			return m.tipo
+func identifyByMDNSPacket(packet []byte) string {
+	text := string(packet)
+	for _, m := range mdnsServiceMarkers {
+		if strings.Contains(text, m.marker) {
+			return m.deviceType
 		}
 	}
 	return ""
 }
 
 var mdnsMu sync.RWMutex
-var mdnsTipoPorIP = make(map[string]string)
+var mdnsTypeByIP = make(map[string]string)
 
-func tipoPorMDNS(ip string) string {
+func typeByMDNS(ip string) string {
 	mdnsMu.RLock()
 	defer mdnsMu.RUnlock()
-	return mdnsTipoPorIP[ip]
+	return mdnsTypeByIP[ip]
 }
 
-// iniciarEscutaMDNS entra no grupo multicast que todo dispositivo mDNS
-// usa (224.0.0.251:5353) e fica passivamente ouvindo os anúncios que
-// já circulam na rede sozinhos — não manda nenhuma pergunta, só
-// escuta. Se a porta já estiver em uso (comum: o Linux já roda um
-// serviço de mDNS tipo Avahi/systemd-resolved), desiste sem travar o
-// resto do programa.
-func iniciarEscutaMDNS(iface string) {
+// startMDNSListener joins the multicast group every mDNS device uses
+// (224.0.0.251:5353) and passively listens to the announcements already
+// circulating on the network — it never asks anything, it only listens.
+// If the port is already taken (common: Linux usually runs an mDNS service
+// such as Avahi or systemd-resolved), it gives up without holding back the
+// rest of the program.
+func startMDNSListener(iface string) {
 	ni, err := net.InterfaceByName(iface)
 	if err != nil {
 		fmt.Println("mDNS: interface não encontrada, identificação por mDNS desativada:", err)
@@ -75,25 +74,24 @@ func iniciarEscutaMDNS(iface string) {
 		defer conn.Close()
 		buf := make([]byte, 4096)
 		for {
-			n, origem, err := conn.ReadFromUDP(buf)
+			n, from, err := conn.ReadFromUDP(buf)
 			if err != nil {
 				return
 			}
-			if tipo := identificarPorPacoteMDNS(buf[:n]); tipo != "" {
+			if deviceType := identifyByMDNSPacket(buf[:n]); deviceType != "" {
 				mdnsMu.Lock()
-				mdnsTipoPorIP[origem.IP.String()] = tipo
+				mdnsTypeByIP[from.IP.String()] = deviceType
 				mdnsMu.Unlock()
 			}
 		}
 	}()
 }
 
-// SSDP (a mesma "linguagem" que já falamos com o roteador pra achar
-// exposição UPnP) também é usada por outros dispositivos da casa —
-// Smart TVs, caixas de som, câmeras — pra anunciar o que são. Aqui a
-// busca é ampla (ST: ssdp:all) e olha o texto de qualquer resposta,
-// não só a do roteador.
-var marcadoresTextoSSDP = []struct{ marcador, tipo string }{
+// SSDP (the same language we already speak to the router to find UPnP
+// exposure) is also used by other devices around the house — smart TVs,
+// speakers, cameras — to announce what they are. Here the search is broad
+// (ST: ssdp:all) and looks at the text of any reply, not just the router's.
+var ssdpTextMarkers = []struct{ marker, deviceType string }{
 	{"chromecast", "🔊 Assistente virtual / streaming (Chromecast/Google)"},
 	{"sonos", "🔊 Assistente virtual / streaming (Sonos)"},
 	{"roku", "🔊 Assistente virtual / streaming (Roku)"},
@@ -105,70 +103,70 @@ var marcadoresTextoSSDP = []struct{ marcador, tipo string }{
 	{"camera", "🎥 Câmera IP"},
 }
 
-func identificarPorTextoSSDP(texto string) string {
-	t := strings.ToLower(texto)
-	for _, m := range marcadoresTextoSSDP {
-		if strings.Contains(t, m.marcador) {
-			return m.tipo
+func identifyBySSDPText(text string) string {
+	t := strings.ToLower(text)
+	for _, m := range ssdpTextMarkers {
+		if strings.Contains(t, m.marker) {
+			return m.deviceType
 		}
 	}
 	return ""
 }
 
-// escanearSSDPGeral manda um M-SEARCH amplo (ssdp:all, em vez de só
-// procurar o roteador) e junta o tipo de qualquer dispositivo que
-// responder dentro da janela de tempo.
-func escanearSSDPGeral() map[string]string {
-	resultado := make(map[string]string)
+// generalSSDPScan sends a broad M-SEARCH (ssdp:all, rather than looking
+// only for the router) and collects the type of any device that answers
+// inside the time window.
+func generalSSDPScan() map[string]string {
+	result := make(map[string]string)
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{})
 	if err != nil {
-		return resultado
+		return result
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(2 * time.Second))
 
-	destino := &net.UDPAddr{IP: net.ParseIP("239.255.255.250"), Port: 1900}
-	busca := "M-SEARCH * HTTP/1.1\r\n" +
+	target := &net.UDPAddr{IP: net.ParseIP("239.255.255.250"), Port: 1900}
+	search := "M-SEARCH * HTTP/1.1\r\n" +
 		"HOST: 239.255.255.250:1900\r\n" +
 		"MAN: \"ssdp:discover\"\r\n" +
 		"MX: 2\r\n" +
 		"ST: ssdp:all\r\n\r\n"
-	if _, err := conn.WriteToUDP([]byte(busca), destino); err != nil {
-		return resultado
+	if _, err := conn.WriteToUDP([]byte(search), target); err != nil {
+		return result
 	}
 
 	buf := make([]byte, 2048)
 	for {
-		n, origem, err := conn.ReadFromUDP(buf)
+		n, from, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			break // timeout — acabaram as respostas
+			break // timeout — no more replies
 		}
-		if tipo := identificarPorTextoSSDP(string(buf[:n])); tipo != "" {
-			resultado[origem.IP.String()] = tipo
+		if deviceType := identifyBySSDPText(string(buf[:n])); deviceType != "" {
+			result[from.IP.String()] = deviceType
 		}
 	}
-	return resultado
+	return result
 }
 
 var ssdpMu sync.RWMutex
-var ssdpTipoPorIP = make(map[string]string)
+var ssdpTypeByIP = make(map[string]string)
 
-func tipoPorSSDP(ip string) string {
+func typeBySSDP(ip string) string {
 	ssdpMu.RLock()
 	defer ssdpMu.RUnlock()
-	return ssdpTipoPorIP[ip]
+	return ssdpTypeByIP[ip]
 }
 
-// iniciarSondagemSSDP repete escanearSSDPGeral periodicamente (é
-// pergunta/resposta, diferente do mDNS que já escuta sozinho) e
-// atualiza o cache usado na identificação de tipo.
-func iniciarSondagemSSDP() {
+// startSSDPProbe repeats generalSSDPScan periodically (it is
+// request/response, unlike mDNS which listens on its own) and refreshes
+// the cache used for type identification.
+func startSSDPProbe() {
 	go func() {
 		for {
-			resultado := escanearSSDPGeral()
+			result := generalSSDPScan()
 			ssdpMu.Lock()
-			for ip, tipo := range resultado {
-				ssdpTipoPorIP[ip] = tipo
+			for ip, deviceType := range result {
+				ssdpTypeByIP[ip] = deviceType
 			}
 			ssdpMu.Unlock()
 			time.Sleep(2 * time.Minute)

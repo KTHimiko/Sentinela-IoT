@@ -9,12 +9,15 @@ import (
 )
 
 type portInfo struct {
-	number     string
-	service    string
-	risk       string
-	explicacao string
+	number      string
+	service     string
+	risk        string
+	explanation string
 }
 
+// The risk keys ("baixo"/"médio"/"alto") and the explanations stay in
+// Portuguese: they are data the user reads in the dashboard, not
+// identifiers.
 var portsToCheck = []portInfo{
 	{"21", "FTP", "alto", "Transferência de arquivos antiga e sem criptografia — usuário e senha trafegam visíveis pra quem estiver espiando a rede."},
 	{"22", "SSH", "médio", "Acesso remoto ao dispositivo. Se a senha for fraca, pode ser invadido."},
@@ -46,56 +49,56 @@ func main() {
 		fmt.Println("   (ou: sudo setcap cap_net_raw,cap_net_admin=eip ./sentinela-iot)")
 	}
 
-	rede, err := detectarRede()
+	network, err := detectNetwork()
 	if err != nil {
 		fmt.Println("Erro ao detectar a rede local:", err)
 		os.Exit(1)
 	}
 	fmt.Printf("Rede detectada: %s via interface %s (gateway %s, MAC %s)\n",
-		rede.IPNet.String(), rede.Interface, rede.Gateway, rede.GatewayMAC)
+		network.IPNet.String(), network.Interface, network.Gateway, network.GatewayMAC)
 
 	if v := os.Getenv("REDES_EXTRAS"); v != "" {
-		rede.RedesExtras = lerRedesExtras(v)
-		for _, extra := range rede.RedesExtras {
+		network.ExtraNetworks = parseExtraNetworks(v)
+		for _, extra := range network.ExtraNetworks {
 			fmt.Printf("Varrendo também %s (outra sub-rede: dá pra detectar, mas não pra identificar por MAC nem isolar)\n", extra)
 		}
 	}
 
-	carregarHistorico()
-	carregarConfiaveis()
-	carregarConhecidos()
-	limparRegrasOrfas(rede)
-	iniciarVigiaTimeoutIsolamento(rede)
-	iniciarDeteccaoDHCPFalso(rede.Interface)
-	iniciarPortalCativo()
+	loadHistory()
+	loadTrusted()
+	loadKnownDevices()
+	cleanOrphanRules(network)
+	startIsolationTimeoutWatcher(network)
+	startRogueDHCPDetection(network.Interface)
 
-	intervalo := 20 * time.Second
+	interval := 20 * time.Second
 	if v := os.Getenv("INTERVALO_SEGUNDOS"); v != "" {
-		if segundos, err := strconv.Atoi(v); err == nil && segundos > 0 {
-			intervalo = time.Duration(segundos) * time.Second
+		if seconds, err := strconv.Atoi(v); err == nil && seconds > 0 {
+			interval = time.Duration(seconds) * time.Second
 		}
 	}
-	fmt.Printf("Monitoramento contínuo a cada %s\n", intervalo)
-	iniciarMonitoramentoContinuo(rede, intervalo)
-	iniciarVerificacaoUPnP()
-	iniciarEscutaMDNS(rede.Interface)
-	iniciarSondagemSSDP()
-	iniciarVerificacaoWifi()
+	fmt.Printf("Monitoramento contínuo a cada %s\n", interval)
+	startContinuousMonitoring(network, interval)
+	startUPnPCheck()
+	startMDNSListener(network.Interface)
+	startSSDPProbe()
+	startWifiCheck()
 
-	http.HandleFunc("/", handler(rede))
-	http.HandleFunc("/atualizar", atualizarHandler(rede))
-	http.HandleFunc("/historico", historicoHandler)
-	http.HandleFunc("/mapa", mapaHandler(rede))
-	http.HandleFunc("/isolar", isolarHandler(rede))
-	http.HandleFunc("/reconectar", reconectarHandler(rede))
-	http.HandleFunc("/confiavel", confiavelHandler(rede))
+	// the route paths stay in Portuguese, like the rest of the interface
+	http.HandleFunc("/", handler(network))
+	http.HandleFunc("/atualizar", refreshHandler(network))
+	http.HandleFunc("/historico", historyHandler)
+	http.HandleFunc("/mapa", mapHandler(network))
+	http.HandleFunc("/isolar", isolateHandler(network))
+	http.HandleFunc("/reconectar", reconnectHandler(network))
+	http.HandleFunc("/confiavel", trustHandler(network))
 
-	porta := "8090"
+	port := "8090"
 	if v := os.Getenv("PORTA"); v != "" {
 		if _, err := strconv.Atoi(v); err == nil {
-			porta = v
+			port = v
 		}
 	}
-	fmt.Printf("Dashboard rodando em http://localhost:%s\n", porta)
-	http.ListenAndServe(":"+porta, nil)
+	fmt.Printf("Dashboard rodando em http://localhost:%s\n", port)
+	http.ListenAndServe(":"+port, nil)
 }
