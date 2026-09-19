@@ -42,14 +42,16 @@ func TestRenderPagePreview(t *testing.T) {
 				Ports: []string{
 					"445 (SMB): Compartilhamento de arquivos do Windows — alvo clássico de vírus que se espalham sozinhos pela rede (ex: WannaCry).",
 				},
+				PortNumbers: []string{"445"},
 			}
 			switch i % 7 {
 			case 0:
 				r.Risk = "baixo"
-				r.Ports = nil
+				r.Ports, r.PortNumbers = nil, nil
 			case 3:
 				r.Risk = "médio"
 				r.Ports = []string{"80 (HTTP): Painel web sem criptografia. Dados podem ser interceptados."}
+				r.PortNumbers = []string{"80"}
 			}
 			if i%9 == 0 {
 				r.Hostname = fmt.Sprintf("Lab02-%02d.local", i)
@@ -65,6 +67,9 @@ func TestRenderPagePreview(t *testing.T) {
 	} {
 		rs := devices
 		if len(rs) > 20 {
+			// um aparelho com Telnet: a anomalia que a prioridade deve achar
+			rs[30].PortNumbers = []string{"445", "23"}
+			rs[30].Ports = append(rs[30].Ports, "23 (Telnet): protocolo antigo e inseguro.")
 			rs[4].Isolated, rs[4].BlockedPackets, rs[4].IPv4BlockActive = true, 1423, true
 			rs[11].Isolated, rs[11].BlockedPackets = true, 87
 			rs[6].Trusted = true

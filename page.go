@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"html"
+	"sort"
 	"strings"
 	"time"
 )
@@ -117,6 +118,9 @@ h2 { font-size:.95rem; margin:0 0 .75rem; letter-spacing:-.01em; }
 .dev-risk { font-size:.75rem; color:var(--ink-2); }
 .meta { font-size:.8rem; color:var(--ink-2); margin-top:.15rem; }
 .mac { font-size:.75rem; color:var(--ink-3); font-variant-numeric:tabular-nums; }
+.prio { font-size:.7rem; padding:.05rem .45rem; border-radius:9px; border:1px solid var(--border); }
+.prio.p2 { background:var(--risk-alto); color:var(--on-solid); border-color:transparent; }
+.prio.p1 { background:var(--surface-2); color:var(--ink-1); }
 .badge-agent { font-size:.7rem; background:var(--accent); color:var(--on-solid); padding:.05rem .45rem; border-radius:9px; }
 .ports { margin:.5rem 0 0; padding-left:1.1rem; font-size:.8rem; color:var(--ink-2); }
 .ports li { margin-bottom:.15rem; }
@@ -173,11 +177,18 @@ func summaryTiles(results []deviceResult) string {
 	return b.String()
 }
 
-func deviceCard(r deviceResult) string {
+func deviceCard(r deviceResult, ctx riskContext) string {
 	slug := riskSlug[r.Risk]
 	classes := "dev " + slug
 	if r.Isolated {
 		classes += " isolado"
+	}
+
+	prio, prioReason := priorityOf(r, ctx)
+	prioBadge := ""
+	if prio != prioRoutine {
+		prioBadge = fmt.Sprintf(`<span class="prio p%d" title="%s">%s</span>`,
+			prio, html.EscapeString(prioReason), prio.label())
 	}
 
 	agent := ""
@@ -280,7 +291,7 @@ func deviceCard(r deviceResult) string {
 	<div class="%s">
 		<div class="dev-top">
 			<span class="dot" style="background:var(--risk-%s)"></span>
-			<span class="dev-ip">%s</span>%s%s
+			<span class="dev-ip">%s</span>%s%s%s
 			<span class="mac">%s</span>
 			<span class="dev-risk">%s</span>
 		</div>
@@ -288,7 +299,7 @@ func deviceCard(r deviceResult) string {
 		%s
 		%s
 		%s
-	</div>`, classes, slug, r.IP, name, agent, mac, riskLabel[r.Risk], metaLine, ports, notice, controls)
+	</div>`, classes, slug, r.IP, name, prioBadge, agent, mac, riskLabel[r.Risk], metaLine, ports, notice, controls)
 }
 
 func mapLegend() string {
@@ -305,12 +316,24 @@ func mapLegend() string {
 }
 
 func pageHTML(network *networkInfo, results []deviceResult, lastUpdate time.Time) string {
+	ctx := buildRiskContext(results)
+
+	// ordena por prioridade sem mexer na fatia do cache, que é
+	// compartilhada com as outras requisições
+	ordered := make([]deviceResult, len(results))
+	copy(ordered, results)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		pi, _ := priorityOf(ordered[i], ctx)
+		pj, _ := priorityOf(ordered[j], ctx)
+		return pi > pj
+	})
+
 	var cards strings.Builder
-	for _, r := range results {
-		cards.WriteString(deviceCard(r))
+	for _, r := range ordered {
+		cards.WriteString(deviceCard(r, ctx))
 	}
 
-	panels := incidentsBlockHTML() + nacBlockHTML(results) + nocBlockHTML(network) + metricsBlockHTML() + agentsBlockHTML() + wifiBlockHTML() + upnpBlockHTML()
+	panels := priorityBlockHTML(results, ctx) + incidentsBlockHTML() + nacBlockHTML(results) + nocBlockHTML(network) + metricsBlockHTML() + agentsBlockHTML() + wifiBlockHTML() + upnpBlockHTML()
 
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="pt-br">
