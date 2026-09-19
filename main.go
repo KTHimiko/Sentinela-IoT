@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -136,6 +137,22 @@ func main() {
 		}()
 	}
 
+	// bind first, announce second: ListenAndServe would have swallowed the
+	// error and let main return with status 0, so a port already taken by
+	// another instance looked exactly like a clean start that then quit
+	listener, err := net.Listen("tcp", dashboardAddr)
+	if err != nil {
+		fmt.Printf("Não consegui abrir a porta %s: %v\n", port, err)
+		// sudo matters here: the socket belongs to a root process, and
+		// without it ss prints the line with no owner, which is the least
+		// useful half of the answer
+		fmt.Printf("   Provavelmente já há outra instância rodando. Veja qual com: sudo ss -tlnp | grep %s\n", port)
+		fmt.Println("   Pra derrubar a anterior: sudo pkill -f sentinela-iot")
+		os.Exit(1)
+	}
 	fmt.Printf("Dashboard rodando em http://localhost:%s\n", port)
-	http.ListenAndServe(dashboardAddr, nil)
+	if err := http.Serve(listener, nil); err != nil {
+		fmt.Println("O dashboard parou:", err)
+		os.Exit(1)
+	}
 }
