@@ -90,15 +90,37 @@ func checkTLSCertificate(host string) string {
 	}
 }
 
-// hostIsUp sends the ping and also takes the TTL that comes for free in
-// the reply — that is what later estimates the operating system (see
-// classifyOSByTTL), with no extra probing.
-func hostIsUp(ip string) (up bool, ttl int) {
+// hostIsUp sends the ping and also takes what comes for free in the
+// reply: the TTL, which later estimates the operating system (see
+// classifyOSByTTL), and the round-trip time, which feeds the network
+// health panel. Neither costs an extra probe.
+func hostIsUp(ip string) (up bool, ttl int, rtt time.Duration) {
 	output, err := exec.Command("ping", "-c", "2", "-W", "1", ip).Output()
 	if err != nil {
-		return false, 0
+		return false, 0, 0
 	}
-	return true, extractTTL(string(output))
+	return true, extractTTL(string(output)), extractRTT(string(output))
+}
+
+// extractRTT reads the first "time=N ms" of the ping output. Two probes
+// are sent, and taking the first keeps this cheap — the median across
+// scans is what the panel reports anyway, so smoothing here would be
+// smoothing twice.
+func extractRTT(output string) time.Duration {
+	idx := strings.Index(output, "time=")
+	if idx == -1 {
+		return 0
+	}
+	rest := output[idx+5:]
+	end := 0
+	for end < len(rest) && (rest[end] == '.' || (rest[end] >= '0' && rest[end] <= '9')) {
+		end++
+	}
+	ms, err := strconv.ParseFloat(rest[:end], 64)
+	if err != nil {
+		return 0
+	}
+	return time.Duration(ms * float64(time.Millisecond))
 }
 
 // extractTTL looks for "ttl=NNN" in the ping output (the iputils-ping
@@ -162,7 +184,9 @@ func findActiveHosts(candidates []string) ([]string, map[string]int) {
 			defer wg.Done()
 			slots <- struct{}{}
 			defer func() { <-slots }()
-			if up, ttl := hostIsUp(ip); up {
+			up, ttl, rtt := hostIsUp(ip)
+			recordProbe(ip, rtt, up)
+			if up {
 				found <- result{ip, ttl}
 			}
 		}(ip)

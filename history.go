@@ -56,6 +56,9 @@ var eventLabel = map[string]string{
 	"timeout_isolamento":     "⏱️ Isolamento expirou (reconectado automaticamente)",
 	"alerta_dhcp_falso":      "🚨 Possível servidor DHCP falso (rogue DHCP)",
 	"metrica_contencao":      "⏱️ Tempo de contenção medido",
+	"nac_negado":             "🚦 Isolado pela política de admissão",
+	"nac_simulado":           "🚦 A política teria isolado (simulação)",
+	"nac_falhou":             "⚠️ A política decidiu isolar mas não conseguiu",
 }
 
 // recordEvent keeps the event in memory (so the dashboard can render it

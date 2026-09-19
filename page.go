@@ -200,6 +200,17 @@ func deviceCard(r deviceResult) string {
 	if r.Vendor != "" && r.Vendor != "Desconhecido" {
 		meta = append(meta, r.Vendor)
 	}
+	// health only for what this machine probed: a device behind an agent
+	// was pinged by that agent, not by us
+	if r.Agent == "" {
+		if median, availability, ok := healthOf(r.IP); ok {
+			health := fmt.Sprintf("responde em %.0f%% das varreduras", availability*100)
+			if median > 0 {
+				health = formatDuration(median) + " · " + health
+			}
+			meta = append(meta, health)
+		}
+	}
 	metaLine := `<div class="meta"><i>Tipo não identificado</i></div>`
 	if len(meta) > 0 {
 		metaLine = fmt.Sprintf(`<div class="meta">%s</div>`, strings.Join(meta, " · "))
@@ -299,7 +310,7 @@ func pageHTML(network *networkInfo, results []deviceResult, lastUpdate time.Time
 		cards.WriteString(deviceCard(r))
 	}
 
-	panels := metricsBlockHTML() + agentsBlockHTML() + wifiBlockHTML() + upnpBlockHTML()
+	panels := incidentsBlockHTML() + nacBlockHTML(results) + nocBlockHTML(network) + metricsBlockHTML() + agentsBlockHTML() + wifiBlockHTML() + upnpBlockHTML()
 
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="pt-br">
@@ -375,7 +386,7 @@ func historyHTML() string {
 
 	var rows strings.Builder
 	if len(events) == 0 {
-		rows.WriteString(`<tr><td colspan="3"><i>Nenhum evento registrado ainda — aguarde a próxima varredura.</i></td></tr>`)
+		rows.WriteString(`<tr><td colspan="4"><i>Nenhum evento registrado ainda — aguarde a próxima varredura.</i></td></tr>`)
 	}
 	for i := len(events) - 1; i >= 0; i-- {
 		e := events[i]
@@ -383,8 +394,11 @@ func historyHTML() string {
 		if label == "" {
 			label = e.Type
 		}
-		rows.WriteString(fmt.Sprintf(`<tr><td>%s</td><td>%s</td><td>%s %s</td></tr>`,
-			html.EscapeString(e.When.Format("02/01 15:04:05")),
+		sev := severityOf(e.Type)
+		rows.WriteString(fmt.Sprintf(
+			`<tr data-sev="%d"><td>%s</td><td><span class="dot" style="background:%s"></span> %s</td><td>%s</td><td>%s %s</td></tr>`,
+			sev, html.EscapeString(e.When.Format("02/01 15:04:05")),
+			sev.colour(), sev.label(),
 			html.EscapeString(label),
 			html.EscapeString(e.IP),
 			html.EscapeString(e.Detail)))
@@ -404,13 +418,30 @@ func historyHTML() string {
     <div><h1>🕒 Histórico de eventos</h1><p class="sub">Do mais recente para o mais antigo.</p></div>
     <a class="btn" href="/">Voltar ao painel</a>
   </header>
+  <div class="actions" style="margin-bottom:.8rem">
+    <button class="btn" data-sev="">Tudo</button>
+    <button class="btn" data-sev="3">Só crítico</button>
+    <button class="btn" data-sev="2">Atenção pra cima</button>
+  </div>
   <div class="card">
     <table>
-      <tr><th>Quando</th><th>Evento</th><th>Dispositivo e detalhe</th></tr>
+      <tr><th>Quando</th><th>Severidade</th><th>Evento</th><th>Dispositivo e detalhe</th></tr>
       %s
     </table>
   </div>
 </div>
+<script>
+  // severity filter: hide the rows below the chosen floor
+  document.querySelectorAll('[data-sev]').forEach(function (b) {
+    if (b.tagName !== 'BUTTON') return;
+    b.addEventListener('click', function () {
+      var floor = b.dataset.sev === '' ? -1 : Number(b.dataset.sev);
+      document.querySelectorAll('tr[data-sev]').forEach(function (row) {
+        row.style.display = Number(row.dataset.sev) >= floor ? '' : 'none';
+      });
+    });
+  });
+</script>
 </body>
 </html>`, pageStyle, rows.String())
 }

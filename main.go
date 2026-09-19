@@ -85,6 +85,14 @@ func main() {
 	startSSDPProbe()
 	startWifiCheck()
 
+	switch policy := configurePolicy(); policy {
+	case policySimulate:
+		fmt.Printf("Política de admissão em simulação: decisões vão pro histórico, nada é bloqueado (aprendizado de %s)\n", learningWindow)
+	case policyEnforce:
+		fmt.Printf("Política de admissão ATIVA: desconhecidos e risco alto serão isolados por %s (aprendizado de %s)\n", policyDuration, learningWindow)
+	}
+	startPolicy(network, interval)
+
 	mode, agents := configureDistributedMode()
 	if mode == modeCentral && len(agents) > 0 {
 		for _, a := range agents {
