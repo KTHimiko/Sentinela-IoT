@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -64,9 +65,21 @@ func iniciarDeteccaoDHCPFalso(iface string) {
 			}
 
 			var tipo layers.DHCPMsgType
+			var gatewayOfertado, dnsOfertado string
 			for _, opt := range dhcp.Options {
-				if opt.Type == layers.DHCPOptMessageType && len(opt.Data) == 1 {
-					tipo = layers.DHCPMsgType(opt.Data[0])
+				switch opt.Type {
+				case layers.DHCPOptMessageType:
+					if len(opt.Data) == 1 {
+						tipo = layers.DHCPMsgType(opt.Data[0])
+					}
+				case layers.DHCPOptRouter:
+					if len(opt.Data) >= 4 {
+						gatewayOfertado = net.IP(opt.Data[:4]).String()
+					}
+				case layers.DHCPOptDNS:
+					if len(opt.Data) >= 4 {
+						dnsOfertado = net.IP(opt.Data[:4]).String()
+					}
 				}
 			}
 			if tipo != layers.DHCPMsgTypeOffer && tipo != layers.DHCPMsgTypeAck {
@@ -92,8 +105,16 @@ func iniciarDeteccaoDHCPFalso(iface string) {
 			dhcpMu.Unlock()
 
 			if !jaConhecido {
+				oferta := ""
+				if gatewayOfertado != "" {
+					oferta += fmt.Sprintf(" Está entregando o gateway %s", gatewayOfertado)
+					if dnsOfertado != "" {
+						oferta += fmt.Sprintf(" e o DNS %s", dnsOfertado)
+					}
+					oferta += " — se esse gateway/DNS não for o do roteador legítimo, o tráfego de novos dispositivos está sendo desviado."
+				}
 				registrarEvento("alerta_dhcp_falso", servidor, fmt.Sprintf(
-					"Um servidor DHCP novo (%s) começou a responder na rede — pode ser um roteador antigo religado por engano, ou um ataque de DHCP falso (rogue DHCP) tentando sequestrar o tráfego de novos dispositivos.", servidor))
+					"Um servidor DHCP novo (%s) começou a responder na rede — pode ser um roteador antigo religado por engano, ou um ataque de DHCP falso (rogue DHCP) tentando sequestrar o tráfego de novos dispositivos.%s", servidor, oferta))
 			}
 		}
 	}()

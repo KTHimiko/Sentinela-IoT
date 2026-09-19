@@ -144,17 +144,27 @@ func classificarSOPorTTL(ttl int) string {
 	}
 }
 
+// limiteSondagens teto de pings simultâneos. Cada hostIsUp gera um
+// processo `ping`, então sem teto uma faixa /22 dispararia mais de 1000
+// processos de uma vez e a varredura inteira empacava — o que já era
+// apertado numa /24 (254 de uma vez) vira inviável assim que se
+// acrescenta uma faixa extra em REDES_EXTRAS.
+const limiteSondagens = 96
+
 func findActiveHosts(candidatos []string) ([]string, map[string]int) {
 	type resultado struct {
 		ip  string
 		ttl int
 	}
 	encontrados := make(chan resultado)
+	vagas := make(chan struct{}, limiteSondagens)
 	var wg sync.WaitGroup
 	for _, ip := range candidatos {
 		wg.Add(1)
 		go func(ip string) {
 			defer wg.Done()
+			vagas <- struct{}{}
+			defer func() { <-vagas }()
 			if ativo, ttl := hostIsUp(ip); ativo {
 				encontrados <- resultado{ip, ttl}
 			}

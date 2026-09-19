@@ -48,3 +48,50 @@ func verificarSpoofingDoGateway(rede *infoRede, tabelaARP map[string]net.Hardwar
 		gatewayMACSuspeito = atual
 	}
 }
+
+// arpDupMu protege o conjunto de MACs já reportados como duplicados,
+// pra alertar só na transição (quando o padrão aparece) e não a cada
+// varredura enquanto ele persistir.
+var arpDupMu sync.Mutex
+var arpDuplicadosReportados = make(map[string]bool)
+
+// detectarMACDuplicado procura, na tabela ARP do próprio notebook, um
+// MAC que responde por dois ou mais IPs ao mesmo tempo. Um dispositivo
+// legítimo tem um MAC por interface, então esse padrão é a assinatura
+// clássica de ARP poisoning: o atacante se anuncia como sendo vários
+// hosts de uma vez pra interceptar o tráfego deles. O gateway é
+// ignorado porque seu spoofing já é coberto por
+// verificarSpoofingDoGateway, e o MAC do próprio notebook também, já
+// que é ele quem faz o spoofing de isolamento.
+func detectarMACDuplicado(rede *infoRede, tabelaARP map[string]net.HardwareAddr) {
+	ipsPorMAC := make(map[string][]string)
+	nossoMAC := ""
+	if rede.MAC != nil {
+		nossoMAC = rede.MAC.String()
+	}
+	gatewayMAC := rede.GatewayMAC.String()
+	for ip, mac := range tabelaARP {
+		m := mac.String()
+		if m == nossoMAC || m == gatewayMAC || ip == rede.Gateway.String() {
+			continue
+		}
+		ipsPorMAC[m] = append(ipsPorMAC[m], ip)
+	}
+
+	for mac, ips := range ipsPorMAC {
+		arpDupMu.Lock()
+		jaReportado := arpDuplicadosReportados[mac]
+		if len(ips) >= 2 {
+			if !jaReportado {
+				arpDuplicadosReportados[mac] = true
+				arpDupMu.Unlock()
+				registrarEvento("alerta_arp_duplicado", ips[0], fmt.Sprintf(
+					"O mesmo MAC (%s) está respondendo por %d IPs ao mesmo tempo (%v) — um dispositivo legítimo tem um MAC por interface, então isso é sinal de ARP poisoning tentando interceptar o tráfego desses hosts.", mac, len(ips), ips))
+				continue
+			}
+		} else if jaReportado {
+			delete(arpDuplicadosReportados, mac)
+		}
+		arpDupMu.Unlock()
+	}
+}

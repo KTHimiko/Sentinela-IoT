@@ -18,7 +18,51 @@ type infoRede struct {
 	MAC         net.HardwareAddr
 	Gateway     net.IP
 	GatewayMAC  net.HardwareAddr
-	GatewayIPv6 net.IP // endereço link-local IPv6 do roteador, se a rede tiver IPv6 (nil se não tiver)
+	GatewayIPv6 net.IP       // endereço link-local IPv6 do roteador, se a rede tiver IPv6 (nil se não tiver)
+	RedesExtras []*net.IPNet // sub-redes vizinhas que o usuário pediu pra varrer (REDES_EXTRAS)
+}
+
+// lerRedesExtras interpreta a variável REDES_EXTRAS, uma lista de CIDRs
+// separados por vírgula (ex: "192.168.1.0/24,192.168.3.0/24").
+//
+// A varredura padrão cobre só a sub-rede da própria interface, porque é
+// só nela que o resto do programa funciona: ARP é um protocolo de enlace
+// e não atravessa roteador, então de outra sub-rede não dá pra descobrir
+// MAC, nem fabricante, nem isolar nada. Dispositivos encontrados aqui
+// aparecem no painel como observáveis, mas sem ação de contenção
+// disponível — ver ForaDaSubRede em resultadoDispositivo.
+//
+// É opt-in de propósito: varrer faixa que não é sua não é algo que o
+// programa deva fazer sozinho.
+func lerRedesExtras(valor string) []*net.IPNet {
+	var redes []*net.IPNet
+	for _, pedaco := range strings.Split(valor, ",") {
+		pedaco = strings.TrimSpace(pedaco)
+		if pedaco == "" {
+			continue
+		}
+		_, rede, err := net.ParseCIDR(pedaco)
+		if err != nil {
+			fmt.Printf("REDES_EXTRAS: ignorando %q (%v)\n", pedaco, err)
+			continue
+		}
+		if tam, _ := rede.Mask.Size(); tam < 22 {
+			fmt.Printf("REDES_EXTRAS: ignorando %s — faixa grande demais pra varrer (use /22 ou menor)\n", rede)
+			continue
+		}
+		redes = append(redes, rede)
+	}
+	return redes
+}
+
+// hostsParaVarrer junta os endereços da sub-rede local com os das faixas
+// extras configuradas.
+func hostsParaVarrer(rede *infoRede) []string {
+	hosts := hostsDaSubRede(rede.IPNet)
+	for _, extra := range rede.RedesExtras {
+		hosts = append(hosts, hostsDaSubRede(extra)...)
+	}
+	return hosts
 }
 
 // detectarRede descobre qual interface tem a rota padrão (a rede real

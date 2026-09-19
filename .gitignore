@@ -1,6 +1,7 @@
 # Dados reais da rede onde o programa rodou — nunca versionar
 historico.jsonl
 confiaveis.json
+conhecidos.json
 
 # Versões antigas, anteriores à divisão em módulos
 bkp/

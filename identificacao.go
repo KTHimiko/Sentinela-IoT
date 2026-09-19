@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -153,6 +154,56 @@ func refinarTipoPorHostname(hostname string) string {
 		return "🔊 Assistente virtual / streaming"
 	case strings.Contains(h, "cam") || strings.Contains(h, "camera"):
 		return "🎥 Câmera IP"
+	default:
+		return ""
+	}
+}
+
+// macAleatorio informa se o MAC tem o bit "localmente administrado"
+// ligado (segundo bit menos significativo do primeiro octeto) e o bit
+// multicast desligado. Celulares e notebooks modernos (iOS, Android,
+// Windows, Linux) trocam de MAC por rede Wi-Fi como recurso de
+// privacidade, e esses MACs sempre têm esse padrão. Como um MAC
+// aleatório nunca vai bater na tabela OUI (o bloco não é registrado no
+// IEEE), essa checagem recupera uma classe inteira de dispositivos que,
+// de outro modo, ficariam eternamente como "tipo não identificado".
+func macAleatorio(mac string) bool {
+	if len(mac) < 2 {
+		return false
+	}
+	primeiro, err := strconv.ParseUint(mac[0:2], 16, 8)
+	if err != nil {
+		return false
+	}
+	b := byte(primeiro)
+	const bitLocal = 0x02     // localmente administrado
+	const bitMulticast = 0x01 // endereço de grupo (não é de um dispositivo só)
+	return b&bitLocal != 0 && b&bitMulticast == 0
+}
+
+// inferirTipoPorPortas dá um palpite de tipo a partir dos serviços que
+// o dispositivo deixa abertos, usado só como último recurso, quando
+// OUI, hostname, mDNS e SSDP não disseram nada. As portas são um sinal
+// funcional (o que o aparelho faz), não de fabricante, então as regras
+// vão da mais específica pra mais genérica e param no primeiro acerto.
+func inferirTipoPorPortas(portas []string) string {
+	tem := make(map[string]bool, len(portas))
+	for _, p := range portas {
+		tem[p] = true
+	}
+	switch {
+	case tem["9100"]:
+		return "🖨️ Impressora"
+	case tem["554"]:
+		return "🎥 Câmera IP"
+	case tem["445"] || tem["3389"]:
+		return "💻 Computador (provável Windows)"
+	case tem["3306"] || tem["5432"]:
+		return "🗄️ Servidor de banco de dados"
+	case tem["23"]:
+		return "💡 Dispositivo IoT (Telnet aberto — comum em equipamento embarcado)"
+	case tem["22"] && !tem["80"] && !tem["443"]:
+		return "🖥️ Servidor/dispositivo com acesso SSH"
 	default:
 		return ""
 	}

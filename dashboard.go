@@ -28,13 +28,20 @@ type resultadoDispositivo struct {
 	Confiavel            bool  // marcado manualmente — suprime alertas de mudança de risco
 	PacotesBloqueados    int64 // contador real do iptables, não só o de pacotes ARP enviados
 	SistemaProvavel      string
+	ForaDaSubRede        bool // veio de uma faixa de REDES_EXTRAS: dá pra ver, não dá pra isolar
 }
 
+// limiteHosts teto de hosts processados ao mesmo tempo. Cada host abre
+// até 17 conexões TCP na varredura de portas, então sem teto uma rede
+// com 100 aparelhos tentaria 1700 conexões simultâneas.
+const limiteHosts = 24
+
 func escanear(rede *infoRede) []resultadoDispositivo {
-	candidatos := hostsDaSubRede(rede.IPNet)
+	candidatos := hostsParaVarrer(rede)
 	hosts, ttls := findActiveHosts(candidatos)
 	tabelaARP := lerTabelaARP(rede.Interface)
 	verificarSpoofingDoGateway(rede, tabelaARP)
+	detectarMACDuplicado(rede, tabelaARP)
 
 	// Alguns dispositivos (Windows, principalmente) bloqueiam ping por
 	// padrão no firewall e nunca apareceriam só com findActiveHosts.
@@ -61,6 +68,7 @@ func escanear(rede *infoRede) []resultadoDispositivo {
 	// tempo do ciclo fica limitado pelo host mais lento, não pela soma.
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	vagas := make(chan struct{}, limiteHosts)
 	var resultados []resultadoDispositivo
 	for _, host := range hosts {
 		if host == rede.IP.String() {
@@ -72,8 +80,11 @@ func escanear(rede *infoRede) []resultadoDispositivo {
 		wg.Add(1)
 		go func(host string) {
 			defer wg.Done()
+			vagas <- struct{}{}
+			defer func() { <-vagas }()
 
 			r := resultadoDispositivo{Nome: host, IP: host}
+			r.ForaDaSubRede = !rede.IPNet.Contains(net.ParseIP(host))
 			r.SistemaProvavel = classificarSOPorTTL(ttls[host])
 			if mac, ok := tabelaARP[host]; ok {
 				r.MAC = mac.String()
@@ -129,6 +140,19 @@ func escanear(rede *infoRede) []resultadoDispositivo {
 			}
 			r.Risco = piorRisco
 
+			// Últimos recursos de identificação, só quando OUI, hostname,
+			// mDNS e SSDP não classificaram o tipo. As portas abertas
+			// (sinal funcional) têm prioridade sobre o palpite de MAC
+			// aleatório (que só diz que é um dispositivo pessoal com
+			// privacidade de MAC ligada, sem dizer qual).
+			if r.TipoProvavel == "" {
+				if tipo := inferirTipoPorPortas(r.PortasNumeros); tipo != "" {
+					r.TipoProvavel = tipo
+				} else if macAleatorio(r.MAC) {
+					r.TipoProvavel = "📱 Provável celular/notebook (privacidade de MAC ligada)"
+				}
+			}
+
 			isolamentosMu.Lock()
 			estado, isolado := isolamentos[host]
 			isolamentosMu.Unlock()
@@ -176,6 +200,8 @@ func paginaHTML(rede *infoRede, resultados []resultadoDispositivo, ultimaAtualiz
 			%s
 			<form method="POST" action="/reconectar"><input type="hidden" name="ip" value="%s"><button class="btn btn-reconectar" type="submit">🔓 Reconectar à rede</button></form>`,
 				r.PacotesEnviados, confirmacao, r.IP)
+		} else if r.ForaDaSubRede {
+			acao = `<div class="erro">🌐 <b>Está em outra sub-rede.</b> Dá pra ver que existe e quais portas expõe, mas não dá pra descobrir o fabricante nem isolar: o ARP, que é o que sustenta as duas coisas, não atravessa roteador. Só um equipamento dentro daquela sub-rede conseguiria conter este dispositivo.</div>`
 		} else if r.MAC == "" {
 			acao = `<div class="erro">⚠️ MAC não resolvido ainda — atualize a página pra tentar isolar.</div>`
 		} else {

@@ -29,7 +29,9 @@ var historicoMem []eventoHistorico
 
 var rotuloEvento = map[string]string{
 	"novo_dispositivo":       "🆕 Novo dispositivo",
+	"dispositivo_voltou":     "🔁 Dispositivo conhecido reapareceu",
 	"dispositivo_saiu":       "👋 Dispositivo saiu da rede",
+	"alerta_arp_duplicado":   "🚨 MAC duplicado (possível ARP poisoning)",
 	"mudanca_risco":          "⚠️ Mudança de risco",
 	"isolado":                "🔒 Isolado",
 	"reconectado":            "🔓 Reconectado",

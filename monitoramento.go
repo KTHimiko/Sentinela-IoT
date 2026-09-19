@@ -84,7 +84,15 @@ func detectarMudancas(anterior map[string]resultadoDispositivo, atuais []resulta
 						"Dispositivo novo do mesmo fabricante (%s) apareceu pouco depois de um dispositivo isolado sair da rede — pode ser o mesmo aparelho evitando o bloqueio ao trocar de MAC/IP.", r.Fabricante))
 				}
 			}
-			registrarEvento("novo_dispositivo", r.IP, fmt.Sprintf("Apareceu na rede (%s)", tipo))
+			// o inventário persistente distingue um dispositivo inédito
+			// (MAC nunca visto) de um velho conhecido que só saiu e
+			// voltou — reduzindo o ruído de "novo dispositivo" repetido
+			// pro mesmo aparelho, observado no histórico.
+			if jaConhecido(r.MAC) {
+				registrarEvento("dispositivo_voltou", r.IP, fmt.Sprintf("Reapareceu na rede (%s)", tipo))
+			} else {
+				registrarEvento("novo_dispositivo", r.IP, fmt.Sprintf("Apareceu na rede pela primeira vez (%s)", tipo))
+			}
 			continue
 		}
 		if antigo.Risco != r.Risco && !r.Confiavel {
@@ -129,6 +137,15 @@ func detectarMudancas(anterior map[string]resultadoDispositivo, atuais []resulta
 			evasaoMu.Unlock()
 		}
 	}
+
+	// registra no inventário persistente tudo que respondeu nesta
+	// varredura — feito só depois das comparações acima, pra não marcar
+	// um dispositivo como conhecido antes de decidir se ele é novo. Uma
+	// única gravação por varredura, não uma por dispositivo.
+	for _, r := range atuais {
+		marcarVisto(r.MAC, r.IP)
+	}
+	salvarConhecidos()
 }
 
 // iniciarMonitoramentoContinuo roda a varredura em segundo plano num

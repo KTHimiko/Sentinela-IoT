@@ -54,8 +54,16 @@ func main() {
 	fmt.Printf("Rede detectada: %s via interface %s (gateway %s, MAC %s)\n",
 		rede.IPNet.String(), rede.Interface, rede.Gateway, rede.GatewayMAC)
 
+	if v := os.Getenv("REDES_EXTRAS"); v != "" {
+		rede.RedesExtras = lerRedesExtras(v)
+		for _, extra := range rede.RedesExtras {
+			fmt.Printf("Varrendo também %s (outra sub-rede: dá pra detectar, mas não pra identificar por MAC nem isolar)\n", extra)
+		}
+	}
+
 	carregarHistorico()
 	carregarConfiaveis()
+	carregarConhecidos()
 	limparRegrasOrfas(rede)
 	iniciarVigiaTimeoutIsolamento(rede)
 	iniciarDeteccaoDHCPFalso(rede.Interface)
