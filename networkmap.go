@@ -201,9 +201,9 @@ func networkMapSVG(network *networkInfo, results []deviceResult) string {
 		ringArc(&svg, gwX, gwY, radius)
 	}
 
-	// the laptop (Sentinela IoT itself) and its link to the router
+	// the laptop (Guarita itself) and its link to the router
 	fmt.Fprintf(&svg, `<line x1="%d" y1="%d" x2="%.1f" y2="%d" stroke="var(--accent)" stroke-width="1.5"/>`, nbX, nbY, gwX, gwY)
-	fmt.Fprintf(&svg, `<circle cx="%d" cy="%d" r="19" fill="var(--accent)"/><text x="%d" y="%d" text-anchor="middle" font-size="15">🛡️</text><text x="%d" y="%d" text-anchor="middle" font-size="11" fill="var(--ink-2)">Sentinela IoT</text>`,
+	fmt.Fprintf(&svg, `<circle cx="%d" cy="%d" r="19" fill="var(--accent)"/><text x="%d" y="%d" text-anchor="middle" font-size="15">🛡️</text><text x="%d" y="%d" text-anchor="middle" font-size="11" fill="var(--ink-2)">Guarita</text>`,
 		nbX, nbY, nbX, nbY+5, nbX, nbY+34)
 
 	// the router

@@ -117,7 +117,7 @@ func unblockForwarding(ip string, mac net.HardwareAddr) {
 }
 
 // cleanOrphanRules finds and removes DROP rules in iptables left over from
-// a previous run of Sentinela. If the program crashes or is killed (Ctrl+C,
+// a previous run of Guarita. If the program crashes or is killed (Ctrl+C,
 // crash, kill -9) while something is isolated, the ARP spoofing stops
 // immediately — it was only a goroutine in memory — but the firewall rule,
 // which is only removed when someone clicks "reconnect", keeps blocking the

@@ -47,7 +47,7 @@ func main() {
 	if os.Geteuid() != 0 {
 		fmt.Println("⚠️  Isolamento por ARP spoofing exige acesso a raw sockets.")
 		fmt.Println("   Rode com: sudo go run .")
-		fmt.Println("   (ou: sudo setcap cap_net_raw,cap_net_admin=eip ./sentinela-iot)")
+		fmt.Println("   (ou: sudo setcap cap_net_raw,cap_net_admin=eip ./guarita)")
 	}
 
 	network, err := detectNetwork()
@@ -138,7 +138,7 @@ func main() {
 		}
 		mux := registerAgentAPI(network, agentName)
 		go func() {
-			fmt.Printf("Agente %q: API em http://0.0.0.0:%s (protegida por SENTINELA_TOKEN)\n", agentName, apiPort)
+			fmt.Printf("Agente %q: API em http://0.0.0.0:%s (protegida por GUARITA_TOKEN)\n", agentName, apiPort)
 			if err := http.ListenAndServe(":"+apiPort, mux); err != nil {
 				fmt.Println("API do agente caiu:", err)
 			}
@@ -155,7 +155,7 @@ func main() {
 		// without it ss prints the line with no owner, which is the least
 		// useful half of the answer
 		fmt.Printf("   Provavelmente já há outra instância rodando. Veja qual com: sudo ss -tlnp | grep %s\n", port)
-		fmt.Println("   Pra derrubar a anterior: sudo pkill -f sentinela-iot")
+		fmt.Println("   Pra derrubar a anterior: sudo pkill -f guarita")
 		os.Exit(1)
 	}
 	fmt.Printf("Dashboard rodando em http://localhost:%s\n", port)

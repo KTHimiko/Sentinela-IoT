@@ -1,4 +1,4 @@
-module sentinela-iot
+module guarita
 
 go 1.27.0
 

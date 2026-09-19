@@ -1,4 +1,4 @@
-# Sentinela IoT
+# Guarita
 
 Controle de acesso à rede (NAC) para redes domésticas e de pequenas
 empresas, com camadas de monitoramento (NOC) e de detecção de ameaças
@@ -60,24 +60,24 @@ equivalente em outros sistemas.
 ## Compilar e executar
 
 ```sh
-git clone https://github.com/KTHimiko/Sentinela-IoT.git
-cd Sentinela-IoT
-go build -o sentinela-iot .
+git clone https://github.com/KTHimiko/Guarita.git
+cd Guarita
+go build -o guarita .
 ```
 
 A execução exige privilégios: injetar quadros ARP precisa de socket em
 modo bruto, e inserir regras de filtragem precisa acesso ao Netfilter.
 
 ```sh
-sudo ./sentinela-iot
+sudo ./guarita
 ```
 
 Preferível a rodar tudo como root é conceder só as duas capacidades
 necessárias:
 
 ```sh
-sudo setcap cap_net_raw,cap_net_admin=eip ./sentinela-iot
-./sentinela-iot
+sudo setcap cap_net_raw,cap_net_admin=eip ./guarita
+./guarita
 ```
 
 O painel sobe em <http://localhost:8090>. Não há configuração a editar: a
@@ -95,7 +95,7 @@ Tudo por variável de ambiente, e todas têm padrão utilizável.
 | `POLITICA_NAC` | `off` | `off`, `simular` ou `aplicar` — ver abaixo |
 | `POLITICA_APRENDIZADO_MINUTOS` | `10` | Janela inicial em que a política nunca bloqueia |
 | `MODO` | — | `agente` ou `central` — ver abaixo |
-| `SENTINELA_TOKEN` | — | Segredo compartilhado entre central e agentes. Obrigatório nos dois modos |
+| `GUARITA_TOKEN` | — | Segredo compartilhado entre central e agentes. Obrigatório nos dois modos |
 | `AGENTES` | — | Agentes que a central agrega: `nome=http://ip:8095,...` |
 | `NOME_AGENTE` | hostname | Como este agente se identifica |
 | `PORTA_API` | `8095` | Porta da API do agente |
@@ -112,8 +112,8 @@ Desligada por padrão. Quando ativa, reprova dispositivos desconhecidos
 marcados como confiáveis passam sempre.
 
 ```sh
-sudo POLITICA_NAC=simular ./sentinela-iot   # registra o que faria
-sudo POLITICA_NAC=aplicar ./sentinela-iot   # isola de verdade, por 15 min
+sudo POLITICA_NAC=simular ./guarita   # registra o que faria
+sudo POLITICA_NAC=aplicar ./guarita   # isola de verdade, por 15 min
 ```
 
 Comece por `simular`. Ela grava no histórico o que *teria* sido bloqueado
@@ -130,11 +130,11 @@ roda-se um agente dentro de cada uma e uma central que agrega:
 
 ```sh
 # dentro da sub-rede 192.168.3.0/24
-sudo MODO=agente SENTINELA_TOKEN=<segredo> NOME_AGENTE=andar1 ./sentinela-iot
+sudo MODO=agente GUARITA_TOKEN=<segredo> NOME_AGENTE=andar1 ./guarita
 
 # na máquina que centraliza
-sudo MODO=central SENTINELA_TOKEN=<segredo> \
-     AGENTES=andar1=http://192.168.3.10:8095 ./sentinela-iot
+sudo MODO=central GUARITA_TOKEN=<segredo> \
+     AGENTES=andar1=http://192.168.3.10:8095 ./guarita
 ```
 
 A central mostra tudo num painel só e, ao isolar um dispositivo remoto,
@@ -144,7 +144,7 @@ ela funciona.
 Em modo agente o painel passa a escutar apenas em `127.0.0.1` e só a API
 fica exposta. O painel não tem autenticação própria, então publicá-lo na
 rede entregaria seu botão de isolar a qualquer um. A API exige o token; e
-sem `SENTINELA_TOKEN` o modo distribuído simplesmente não sobe, em vez de
+sem `GUARITA_TOKEN` o modo distribuído simplesmente não sobe, em vez de
 subir inseguro.
 
 ## Limitações conhecidas
