@@ -272,6 +272,7 @@ func startTrafficCapture(handle *pcap.Handle, ip string, targetMAC net.HardwareA
 // forever after a test.
 func isolateDevice(network *networkInfo, targetIP net.IP, targetMAC net.HardwareAddr, duration time.Duration) error {
 	ip := targetIP.String()
+	orderedAt := time.Now()
 
 	isolationsMu.Lock()
 	if _, alreadyActive := isolations[ip]; alreadyActive {
@@ -289,6 +290,14 @@ func isolateDevice(network *networkInfo, targetIP net.IP, targetMAC net.Hardware
 		handle.Close()
 		return fmt.Errorf("não consegui bloquear o encaminhamento de %s no iptables (rode como root): %w", ip, err)
 	}
+	// the containment is only counted as effective once the rule is
+	// verified present in the kernel, not when the command returned —
+	// same distinction the dashboard makes between "says it isolated" and
+	// "proved it is isolated"
+	if ipv4BlockActive(ip) {
+		recordContainment(ip, orderedAt, time.Now())
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	state := &activeIsolation{cancel: cancel, since: time.Now(), mac: targetMAC}
 	if duration > 0 {

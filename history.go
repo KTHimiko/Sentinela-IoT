@@ -55,6 +55,7 @@ var eventLabel = map[string]string{
 	"alerta_evil_twin":       "🚨 Possível rede Wi-Fi falsa (evil twin)",
 	"timeout_isolamento":     "⏱️ Isolamento expirou (reconectado automaticamente)",
 	"alerta_dhcp_falso":      "🚨 Possível servidor DHCP falso (rogue DHCP)",
+	"metrica_contencao":      "⏱️ Tempo de contenção medido",
 }
 
 // recordEvent keeps the event in memory (so the dashboard can render it

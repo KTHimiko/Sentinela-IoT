@@ -346,6 +346,7 @@ func pageHTML(network *networkInfo, results []deviceResult, lastUpdate time.Time
   %s
   %s
   %s
+  %s
   <script>
     setInterval(function () {
       fetch('/mapa').then(function (resp) { return resp.text(); }).then(function (svg) {
@@ -354,7 +355,35 @@ func pageHTML(network *networkInfo, results []deviceResult, lastUpdate time.Time
     }, 4000);
   </script>
 </body>
-</html>`, network.IPNet.String(), network.Interface, network.Gateway.String(), len(results), formatWhen(lastUpdate), networkMapSVG(network, results), agentsBlockHTML(), wifiBlockHTML(), upnpBlockHTML(), cards.String())
+</html>`, network.IPNet.String(), network.Interface, network.Gateway.String(), len(results), formatWhen(lastUpdate), networkMapSVG(network, results), metricsBlockHTML(), agentsBlockHTML(), wifiBlockHTML(), upnpBlockHTML(), cards.String())
+}
+
+// metricsBlockHTML shows the measured response times. It exists to give
+// the evaluation real numbers instead of estimates, and it deliberately
+// separates the artefact's own cost from the interval that still depends
+// on a person deciding to click.
+func metricsBlockHTML() string {
+	scan, containment, riskToOrder := metricsSnapshot()
+	if scan.Count == 0 && containment.Count == 0 {
+		return ""
+	}
+
+	line := func(label string, s summary, note string) string {
+		if s.Count == 0 {
+			return fmt.Sprintf("<li>%s: <i>ainda sem medições</i></li>", label)
+		}
+		return fmt.Sprintf("<li>%s: <b>%s</b> na mediana (mín. %s, máx. %s, %d amostra(s))%s</li>",
+			label, formatDuration(s.Median), formatDuration(s.Min), formatDuration(s.Max), s.Count, note)
+	}
+
+	var lines strings.Builder
+	lines.WriteString(line("Varredura completa da rede", scan, ""))
+	lines.WriteString(line("Contenção de um dispositivo", containment,
+		" — da ordem até a regra confirmada ativa no firewall"))
+	lines.WriteString(line("Do risco detectado até a ordem de isolamento", riskToOrder,
+		" — <b>inclui o tempo de decisão humana</b>, já que o isolamento hoje parte de um clique"))
+
+	return fmt.Sprintf(`<div class="painelUPnP neutro">⏱️ <b>Tempos de resposta medidos</b><ul>%s</ul></div>`, lines.String())
 }
 
 // agentsBlockHTML reports the state of the agents this central polls. It

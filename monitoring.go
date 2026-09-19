@@ -17,7 +17,11 @@ var lastResults []deviceResult
 var lastUpdate time.Time
 
 func refreshCache(network *networkInfo) []deviceResult {
+	start := time.Now()
 	current := scanNetwork(network)
+	recordScanDuration(time.Since(start))
+	noteRiskLevel(current)
+
 	stateMu.Lock()
 	lastResults = current
 	lastUpdate = time.Now()
