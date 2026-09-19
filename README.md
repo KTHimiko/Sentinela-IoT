@@ -13,7 +13,7 @@ tabela ARP do dispositivo-alvo combinado com regras de `iptables` e
 sentido defensivo e restrito a um endereço previamente classificado como
 de risco.
 
-Trabalho de conclusão de curso em Redes de Computadores, Fatec Osasco.
+Trabalho para a Feira FatecExpo em Redes de Computadores, Fatec Osasco.
 
 ## O que ele faz
 
