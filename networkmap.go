@@ -88,7 +88,16 @@ func networkMapSVG(network *networkInfo, results []deviceResult) string {
 	const nbX, nbY = 90, 60
 
 	var ordinary, isolated []deviceResult
+	remote := 0
 	for _, r := range results {
+		// the map is drawn around this machine's router, so devices
+		// reported by an agent in another subnet have no meaningful place
+		// in it — they hang off a different router entirely. They are
+		// counted here and listed as cards below the map instead.
+		if r.Agent != "" {
+			remote++
+			continue
+		}
 		if r.Isolated {
 			isolated = append(isolated, r)
 		} else {
@@ -148,6 +157,11 @@ func networkMapSVG(network *networkInfo, results []deviceResult) string {
 			fmt.Fprintf(&svg, `<circle cx="%d" cy="%d" r="22" fill="#b3261e"/><text x="%d" y="%d" text-anchor="middle" font-size="16">🔒</text><text x="%d" y="%d" text-anchor="middle" font-size="9" fill="#333">%s</text><text x="%d" y="%d" text-anchor="middle" font-size="9" fill="#c62828">🚫 %d</text>`,
 				x, y, x, y+5, x, y+36, shortLabel(r), x, y+48, r.BlockedPackets)
 		}
+	}
+
+	if remote > 0 {
+		fmt.Fprintf(&svg, `<text x="20" y="%d" font-size="12" fill="#5e35b1">🛰️ mais %d dispositivo(s) em outras sub-redes, reportados por agentes — veja os cartões abaixo</text>`,
+			height-20, remote)
 	}
 
 	svg.WriteString(`</svg>`)

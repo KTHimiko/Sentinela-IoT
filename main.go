@@ -84,6 +84,14 @@ func main() {
 	startSSDPProbe()
 	startWifiCheck()
 
+	mode, agents := configureDistributedMode()
+	if mode == modeCentral && len(agents) > 0 {
+		for _, a := range agents {
+			fmt.Printf("Central: agregando o agente %s (%s)\n", a.Name, a.URL)
+		}
+		startAgentPolling(agents, interval)
+	}
+
 	// the route paths stay in Portuguese, like the rest of the interface
 	http.HandleFunc("/", handler(network))
 	http.HandleFunc("/atualizar", refreshHandler(network))
@@ -99,6 +107,35 @@ func main() {
 			port = v
 		}
 	}
+
+	// In agent mode the dashboard is bound to localhost and only the API
+	// is published on the network. The dashboard has no authentication of
+	// its own — it was written for someone sitting at the machine — so
+	// making its port reachable would hand the "isolate" button to anyone
+	// on the agent's LAN.
+	dashboardAddr := ":" + port
+	if mode == modeAgent {
+		dashboardAddr = "127.0.0.1:" + port
+
+		apiPort := defaultAPIPort
+		if v := os.Getenv("PORTA_API"); v != "" {
+			if _, err := strconv.Atoi(v); err == nil {
+				apiPort = v
+			}
+		}
+		agentName := os.Getenv("NOME_AGENTE")
+		if agentName == "" {
+			agentName, _ = os.Hostname()
+		}
+		mux := registerAgentAPI(network, agentName)
+		go func() {
+			fmt.Printf("Agente %q: API em http://0.0.0.0:%s (protegida por SENTINELA_TOKEN)\n", agentName, apiPort)
+			if err := http.ListenAndServe(":"+apiPort, mux); err != nil {
+				fmt.Println("API do agente caiu:", err)
+			}
+		}()
+	}
+
 	fmt.Printf("Dashboard rodando em http://localhost:%s\n", port)
-	http.ListenAndServe(":"+port, nil)
+	http.ListenAndServe(dashboardAddr, nil)
 }

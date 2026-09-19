@@ -28,7 +28,23 @@ type deviceResult struct {
 	Trusted             bool  // set by hand — suppresses risk-change alerts
 	BlockedPackets      int64 // the real iptables counter, not the ARP packets we sent
 	ProbableOS          string
-	OutsideSubnet       bool // came from a REDES_EXTRAS range: visible, but not containable
+	OutsideSubnet       bool   // came from a REDES_EXTRAS range: visible, but not containable
+	Agent               string // which agent reported it; empty means this machine
+	AgentURL            string // where to send isolate/reconnect orders for it
+}
+
+// allResults merges what this machine scanned with what the agents
+// reported. Only the central ever has anything in the second half.
+func allResults() ([]deviceResult, time.Time) {
+	local, updated := readCache()
+	remote, _ := readAgentCache()
+	if len(remote) == 0 {
+		return local, updated
+	}
+	merged := make([]deviceResult, 0, len(local)+len(remote))
+	merged = append(merged, local...)
+	merged = append(merged, remote...)
+	return merged, updated
 }
 
 // maxHosts caps how many hosts are processed at once. Each host opens up
@@ -201,7 +217,7 @@ func pageHTML(network *networkInfo, results []deviceResult, lastUpdate time.Time
 			<form method="POST" action="/reconectar"><input type="hidden" name="ip" value="%s"><button class="btn btn-reconectar" type="submit">🔓 Reconectar à rede</button></form>`,
 				r.SentPackets, confirmation, r.IP)
 		} else if r.OutsideSubnet {
-			action = `<div class="erro">🌐 <b>Está em outra sub-rede.</b> Dá pra ver que existe e quais portas expõe, mas não dá pra descobrir o fabricante nem isolar: o ARP, que é o que sustenta as duas coisas, não atravessa roteador. Só um equipamento dentro daquela sub-rede conseguiria conter este dispositivo.</div>`
+			action = `<div class="erro">🌐 <b>Está em outra sub-rede e sem agente.</b> Dá pra ver que existe e quais portas expõe, mas não dá pra descobrir o fabricante nem isolar: o ARP, que é o que sustenta as duas coisas, não atravessa roteador. Para conter este dispositivo seria preciso rodar um agente do Sentinela dentro da sub-rede dele.</div>`
 		} else if r.MAC == "" {
 			action = `<div class="erro">⚠️ MAC não resolvido ainda — atualize a página pra tentar isolar.</div>`
 		} else {
@@ -259,15 +275,20 @@ func pageHTML(network *networkInfo, results []deviceResult, lastUpdate time.Time
 			}
 		}
 
+		origin := ""
+		if r.Agent != "" {
+			origin = fmt.Sprintf(`<span class="origem">via agente %s</span>`, html.EscapeString(r.Agent))
+		}
+
 		cards.WriteString(fmt.Sprintf(`
 		<div class="card" style="border-left-color:%s">
-			<h3>📡 %s <span class="ip">(MAC %s)</span></h3>
+			<h3>📡 %s <span class="ip">(MAC %s)</span> %s</h3>
 			<div class="badge" style="background:%s">%s</div>
 			%s
 			%s
 			%s
 			%s
-		</div>`, color, r.IP, mac, color, riskLabel[r.Risk], identification, ports, action, trust))
+		</div>`, color, r.IP, mac, origin, color, riskLabel[r.Risk], identification, ports, action, trust))
 	}
 
 	return fmt.Sprintf(`<!DOCTYPE html>
@@ -284,6 +305,7 @@ func pageHTML(network *networkInfo, results []deviceResult, lastUpdate time.Time
   .ip { color:#888; font-weight:normal; font-size:0.85rem; }
   .badge { display:inline-block; color:white; padding:0.15rem 0.6rem; border-radius:12px; font-size:0.8rem; margin-bottom:0.6rem; }
   .identificacao { font-size:0.85rem; color:#333; margin-bottom:0.4rem; }
+  .origem { font-size:0.75rem; font-weight:normal; color:white; background:#5e35b1; padding:0.1rem 0.5rem; border-radius:10px; }
   .isolado { background:#fdf1f0; border:1px solid #f0c4c0; padding:0.6rem; border-radius:6px; margin-top:0.5rem; font-size:0.9rem; }
   .confirmado { color:#2e7d32; font-size:0.85rem; margin-top:0.4rem; }
   .alertaBloqueio { background:#fff3cd; border:1px solid #e0b400; color:#7a5c00; padding:0.5rem; border-radius:6px; font-size:0.85rem; margin-top:0.4rem; }
@@ -323,6 +345,7 @@ func pageHTML(network *networkInfo, results []deviceResult, lastUpdate time.Time
   %s
   %s
   %s
+  %s
   <script>
     setInterval(function () {
       fetch('/mapa').then(function (resp) { return resp.text(); }).then(function (svg) {
@@ -331,7 +354,39 @@ func pageHTML(network *networkInfo, results []deviceResult, lastUpdate time.Time
     }, 4000);
   </script>
 </body>
-</html>`, network.IPNet.String(), network.Interface, network.Gateway.String(), len(results), formatWhen(lastUpdate), networkMapSVG(network, results), wifiBlockHTML(), upnpBlockHTML(), cards.String())
+</html>`, network.IPNet.String(), network.Interface, network.Gateway.String(), len(results), formatWhen(lastUpdate), networkMapSVG(network, results), agentsBlockHTML(), wifiBlockHTML(), upnpBlockHTML(), cards.String())
+}
+
+// agentsBlockHTML reports the state of the agents this central polls. It
+// renders nothing at all when there are none, so a standalone instance
+// looks exactly as it did before.
+func agentsBlockHTML() string {
+	devices, failures := readAgentCache()
+	if len(devices) == 0 && len(failures) == 0 {
+		return ""
+	}
+
+	byAgent := map[string]int{}
+	for _, d := range devices {
+		byAgent[d.Agent]++
+	}
+
+	var lines strings.Builder
+	for name, count := range byAgent {
+		lines.WriteString(fmt.Sprintf("<li>✅ <b>%s</b>: %d dispositivo(s)</li>",
+			html.EscapeString(name), count))
+	}
+	for name, reason := range failures {
+		lines.WriteString(fmt.Sprintf("<li>⚠️ <b>%s</b>: sem resposta — %s</li>",
+			html.EscapeString(name), html.EscapeString(reason)))
+	}
+
+	class := "ok"
+	if len(failures) > 0 {
+		class = "alerta"
+	}
+	return fmt.Sprintf(`<div class="painelUPnP %s">🛰️ <b>Agentes em outras sub-redes</b><ul>%s</ul></div>`,
+		class, lines.String())
 }
 
 // upnpBlockHTML shows whether the router is exposing any port to the
@@ -459,7 +514,7 @@ func historyHTML() string {
 
 func handler(network *networkInfo) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		results, lastUpdate := readCache()
+		results, lastUpdate := allResults()
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, pageHTML(network, results, lastUpdate))
 	}
@@ -484,10 +539,25 @@ func historyHandler(w http.ResponseWriter, r *http.Request) {
 // the map without reloading the whole page.
 func mapHandler(network *networkInfo) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		results, _ := readCache()
+		results, _ := allResults()
 		w.Header().Set("Content-Type", "image/svg+xml; charset=utf-8")
 		fmt.Fprint(w, networkMapSVG(network, results))
 	}
+}
+
+// isolateByIP resolves the MAC for an IP on this machine's subnet and
+// starts the containment. Shared by the web form and the agent's API, so
+// both go through exactly the same checks.
+func isolateByIP(network *networkInfo, ip string, duration time.Duration) error {
+	targetIP := net.ParseIP(ip).To4()
+	if targetIP == nil {
+		return fmt.Errorf("IP inválido: %q", ip)
+	}
+	mac, ok := readARPTable(network.Interface)[ip]
+	if !ok {
+		return fmt.Errorf("MAC de %s ainda não resolvido, tente escanear de novo", ip)
+	}
+	return isolateDevice(network, targetIP, mac, duration)
 }
 
 func isolateHandler(network *networkInfo) http.HandlerFunc {
@@ -496,28 +566,29 @@ func isolateHandler(network *networkInfo) http.HandlerFunc {
 			http.Error(w, "método não permitido", http.StatusMethodNotAllowed)
 			return
 		}
-		ipStr := r.FormValue("ip")
-		targetIP := net.ParseIP(ipStr).To4()
-		if targetIP == nil {
-			http.Error(w, "IP inválido", http.StatusBadRequest)
-			return
-		}
-		mac, ok := readARPTable(network.Interface)[ipStr]
-		if !ok {
-			http.Error(w, "MAC do dispositivo ainda não resolvido, tente escanear de novo", http.StatusConflict)
-			return
-		}
+		ip := r.FormValue("ip")
 		// duration chosen by the user in the form, in minutes; 0 (or a
 		// missing/invalid value) means "no deadline"
-		var duration time.Duration
-		if minutes, err := strconv.Atoi(r.FormValue("duracao")); err == nil && minutes > 0 {
-			duration = time.Duration(minutes) * time.Minute
+		minutes, _ := strconv.Atoi(r.FormValue("duracao"))
+		if minutes < 0 {
+			minutes = 0
 		}
-		if err := isolateDevice(network, targetIP, mac, duration); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+
+		var err error
+		if agentURL := agentURLFor(ip); agentURL != "" {
+			// the device belongs to another subnet's agent: only that
+			// agent can reach it with ARP, so the order is forwarded
+			err = proxyAction(agentURL, "/api/isolar", map[string]any{"ip": ip, "minutos": minutes})
+		} else {
+			err = isolateByIP(network, ip, time.Duration(minutes)*time.Minute)
+			if err == nil {
+				refreshCache(network)
+			}
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
-		refreshCache(network)
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	}
 }
@@ -529,11 +600,20 @@ func reconnectHandler(network *networkInfo) http.HandlerFunc {
 			return
 		}
 		ip := r.FormValue("ip")
-		if err := reconnectDevice(ip, network); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+
+		var err error
+		if agentURL := agentURLFor(ip); agentURL != "" {
+			err = proxyAction(agentURL, "/api/reconectar", map[string]any{"ip": ip})
+		} else {
+			err = reconnectDevice(ip, network)
+			if err == nil {
+				refreshCache(network)
+			}
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
-		refreshCache(network)
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	}
 }
