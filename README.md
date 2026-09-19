@@ -186,13 +186,6 @@ Um único pacote, separado por responsabilidade:
 | `history.go`, `inventory.go`, `trust.go` | Persistência |
 | `page.go`, `dashboard.go`, `networkmap.go` | Interface web |
 
-Identificadores e comentários em inglês; os textos que o usuário lê
-continuam em português, que é o público a que o projeto se dirige.
-
-```sh
-go test .                                       # 36 testes
-PREVIEW=1 go test -run TestRenderPagePreview    # gera o painel em /tmp pra inspeção visual
-```
 
 ## Aviso
 
