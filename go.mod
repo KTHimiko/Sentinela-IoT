@@ -1,4 +1,4 @@
-module guarita
+module immunegate
 
 go 1.27.0
 

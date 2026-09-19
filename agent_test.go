@@ -175,7 +175,7 @@ func TestProxyActionSurfacesRefusal(t *testing.T) {
 // without a shared token has to fall back to standalone, never publish an
 // unauthenticated isolation endpoint on the network.
 func TestDistributedModeFailsClosedWithoutToken(t *testing.T) {
-	t.Setenv("GUARITA_TOKEN", "")
+	t.Setenv("IMMUNEGATE_TOKEN", "")
 
 	for _, requested := range []string{"agente", "central", "AGENTE"} {
 		t.Setenv("MODO", requested)
@@ -190,7 +190,7 @@ func TestDistributedModeFailsClosedWithoutToken(t *testing.T) {
 	}
 
 	t.Setenv("MODO", "central")
-	t.Setenv("GUARITA_TOKEN", "segredo")
+	t.Setenv("IMMUNEGATE_TOKEN", "segredo")
 	t.Setenv("AGENTES", "andar1=http://192.168.3.10:8095")
 	mode, agents := configureDistributedMode()
 	if mode != modeCentral || len(agents) != 1 {

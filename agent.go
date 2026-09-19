@@ -301,7 +301,7 @@ func agentURLFor(ip string) string {
 
 // ---------- startup ----------
 
-// configureDistributedMode reads MODO, GUARITA_TOKEN and AGENTES, and
+// configureDistributedMode reads MODO, IMMUNEGATE_TOKEN and AGENTES, and
 // reports the mode plus the agents to poll. It fails closed: in agent or
 // central mode without a token, the distributed part simply does not start
 // and the program carries on standalone, rather than publishing an
@@ -312,9 +312,9 @@ func configureDistributedMode() (mode string, agents []remoteAgent) {
 		return modeStandalone, nil
 	}
 
-	apiToken = os.Getenv("GUARITA_TOKEN")
+	apiToken = os.Getenv("IMMUNEGATE_TOKEN")
 	if apiToken == "" {
-		fmt.Printf("MODO=%s ignorado: defina GUARITA_TOKEN com um segredo compartilhado entre a central e os agentes.\n", mode)
+		fmt.Printf("MODO=%s ignorado: defina IMMUNEGATE_TOKEN com um segredo compartilhado entre a central e os agentes.\n", mode)
 		fmt.Println("   Sem isso, qualquer um na rede poderia isolar qualquer dispositivo. Seguindo em modo autônomo.")
 		return modeStandalone, nil
 	}

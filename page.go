@@ -311,7 +311,7 @@ func mapLegend() string {
 		item("var(--risk-medio)", "risco médio") +
 		item("var(--risk-alto)", "risco alto") +
 		item("var(--router)", "roteador") +
-		item("var(--accent)", "Guarita") +
+		item("var(--accent)", "ImmuneGate") +
 		`</div>`
 }
 
@@ -340,14 +340,14 @@ func pageHTML(network *networkInfo, results []deviceResult, lastUpdate time.Time
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Guarita</title>
+<title>ImmuneGate</title>
 <style>%s</style>
 </head>
 <body>
 <div class="wrap">
   <header>
     <div>
-      <h1>🛡️ Guarita</h1>
+      <h1>🛡️ ImmuneGate</h1>
       <p class="sub">%s · interface %s · gateway %s · última varredura %s</p>
     </div>
     <div class="actions">
@@ -432,7 +432,7 @@ func historyHTML() string {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Guarita — Histórico</title>
+<title>ImmuneGate — Histórico</title>
 <style>%s</style>
 </head>
 <body>
