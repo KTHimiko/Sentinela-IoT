@@ -136,6 +136,33 @@ body[data-filtro="medio"] .dev:not(.medio),
 body[data-filtro="baixo"] .dev:not(.baixo),
 body[data-filtro="iso"] .dev:not(.isolado) { display:none; }
 
+/* search, which narrows the list and dims the map together */
+.dev.nomatch { display:none; }
+.search { display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; margin-bottom:.75rem; }
+.search input {
+  flex:1 1 260px; padding:.55rem .8rem; border-radius:8px; border:1px solid var(--border);
+  background:var(--surface); color:var(--ink-1); font-size:.9rem; font-family:inherit;
+}
+.search input:focus { outline:2px solid var(--accent); outline-offset:-1px; }
+.search .meta { margin:0; }
+.empty { display:none; }
+.empty.show { display:block; }
+
+/* map nodes are buttons: a click brings up that device's card */
+#mapaSVG .node { cursor:pointer; transition:opacity .15s; }
+#mapaSVG .node:hover circle, #mapaSVG .node:focus circle { stroke:var(--ink-1); }
+#mapaSVG .node:focus { outline:none; }
+#mapaSVG .node.dim { opacity:.12; }
+#mapaSVG .node.sel circle { stroke:var(--accent); stroke-width:4; }
+.map-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:1rem; }
+.map-grid.has-sel { grid-template-columns:minmax(0,1fr) minmax(280px,340px); }
+@media (max-width:820px) { .map-grid.has-sel { grid-template-columns:minmax(0,1fr); } }
+#selecionado:empty { display:none; }
+#selecionado .dev { margin:0; }
+.sel-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:.4rem; font-size:.78rem; color:var(--ink-2); }
+.sel-head button { background:none; border:none; color:var(--ink-2); cursor:pointer; font-size:1rem; padding:.1rem .3rem; }
+.dev.flash { outline:2px solid var(--accent); outline-offset:2px; }
+
 table { width:100%; border-collapse:collapse; font-size:.85rem; }
 th, td { text-align:left; padding:.5rem .7rem; border-bottom:1px solid var(--grid); }
 th { color:var(--ink-2); font-weight:600; font-size:.78rem; }
@@ -175,6 +202,20 @@ func summaryTiles(results []deviceResult) string {
 	b.WriteString(tile("iso", "iso", fmt.Sprint(isolated), "isolados"))
 	b.WriteString(`</section>`)
 	return b.String()
+}
+
+// searchText is everything the search box matches against, lowercased
+// once here so the script only has to lowercase the query. The same text
+// goes on the card and on the map node, so both filter identically.
+func searchText(r deviceResult) string {
+	fields := []string{r.IP, r.Hostname, r.MAC, r.Vendor, r.ProbableType, r.ProbableOS, riskLabel[r.Risk]}
+	if r.Agent != "" {
+		fields = append(fields, "agente "+r.Agent)
+	}
+	if r.Isolated {
+		fields = append(fields, "isolado quarentena")
+	}
+	return html.EscapeString(strings.ToLower(strings.Join(fields, " ")))
 }
 
 func deviceCard(r deviceResult, ctx riskContext) string {
@@ -288,7 +329,7 @@ func deviceCard(r deviceResult, ctx riskContext) string {
 	}
 
 	return fmt.Sprintf(`
-	<div class="%s">
+	<div class="%s" data-ip="%s" data-busca="%s">
 		<div class="dev-top">
 			<span class="dot" style="background:var(--risk-%s)"></span>
 			<span class="dev-ip">%s</span>%s%s%s
@@ -299,7 +340,7 @@ func deviceCard(r deviceResult, ctx riskContext) string {
 		%s
 		%s
 		%s
-	</div>`, classes, slug, r.IP, name, prioBadge, agent, mac, riskLabel[r.Risk], metaLine, ports, notice, controls)
+	</div>`, classes, html.EscapeString(r.IP), searchText(r), slug, r.IP, name, prioBadge, agent, mac, riskLabel[r.Risk], metaLine, ports, notice, controls)
 }
 
 func mapLegend() string {
@@ -358,16 +399,28 @@ func pageHTML(network *networkInfo, results []deviceResult, lastUpdate time.Time
 
   %s
 
+  <div class="search">
+    <input id="busca" type="search" autocomplete="off" spellcheck="false"
+           placeholder="Buscar por IP, nome, MAC, fabricante ou tipo — tecle / para focar"
+           aria-label="Buscar dispositivos">
+    <span class="meta" id="buscaConta"></span>
+  </div>
+
   <section class="panels">%s</section>
 
   <section class="card">
     <h2>Mapa da rede</h2>
     %s
-    <div id="mapaSVG">%s</div>
+    <div class="map-grid" id="mapaGrid">
+      <div id="mapaSVG">%s</div>
+      <div id="selecionado"></div>
+    </div>
+    <p class="meta">Clique num dispositivo do mapa para ver os detalhes e isolar ou reconectar.</p>
   </section>
 
   <section>
     <h2>Dispositivos</h2>
+    <div class="note empty" id="buscaVazia">Nenhum dispositivo corresponde à busca.</div>
     %s
   </section>
 </div>
@@ -384,11 +437,124 @@ func pageHTML(network *networkInfo, results []deviceResult, lastUpdate time.Time
       });
     });
   });
+
+  // ---- search: narrows the list and dims the map with the same query ----
+  var busca = document.getElementById('busca');
+  var conta = document.getElementById('buscaConta');
+  var vazia = document.getElementById('buscaVazia');
+  var cards = Array.prototype.slice.call(document.querySelectorAll('.wrap > section .dev[data-ip]'));
+
+  // every word has to appear somewhere: "camera alto" finds the high-risk
+  // cameras, "192.168.0.4" finds that address and its neighbours .40–.49
+  // accents are dropped on both sides, so "camera" finds "Câmera IP"
+  function plain(t) {
+    return t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  }
+  function matches(el, q) {
+    // a complete address typed in means that device and no other, not
+    // also .10 to .19 when looking for .1
+    if (exactIP) return el.dataset.ip === exactIP;
+    var text = plain(el.dataset.busca);
+    return q.every(function (w) { return text.indexOf(w) !== -1; });
+  }
+  var exactIP = '';
+  function query() {
+    var raw = busca.value.trim();
+    exactIP = cards.some(function (c) { return c.dataset.ip === raw; }) ? raw : '';
+    return plain(raw).split(/\s+/).filter(Boolean);
+  }
+  function applySearch() {
+    var q = query(), shown = 0;
+    cards.forEach(function (c) {
+      var ok = matches(c, q);
+      c.classList.toggle('nomatch', !ok);
+      if (ok) shown++;
+    });
+    document.querySelectorAll('#mapaSVG .node').forEach(function (n) {
+      n.classList.toggle('dim', q.length > 0 && !matches(n, q));
+    });
+    conta.textContent = q.length ? shown + ' de ' + cards.length : '';
+    vazia.classList.toggle('show', q.length > 0 && shown === 0);
+    try { sessionStorage.setItem('busca', busca.value); } catch (e) {}
+  }
+  busca.addEventListener('input', applySearch);
+  busca.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { busca.value = ''; applySearch(); busca.blur(); }
+    if (e.key === 'Enter') {
+      // with a single match, Enter goes straight to it
+      var hit = cards.filter(function (c) { return !c.classList.contains('nomatch'); });
+      if (hit.length === 1) select(hit[0].dataset.ip, true);
+    }
+  });
+  document.addEventListener('keydown', function (e) {
+    var typing = /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName);
+    if (e.key === '/' && !typing) { e.preventDefault(); busca.focus(); busca.select(); }
+  });
+  try { busca.value = sessionStorage.getItem('busca') || ''; } catch (e) {}
+
+  // ---- map selection: a click on a node brings up that device's card ----
+  // The card is cloned from the list rather than rebuilt, so the buttons in
+  // the panel are the very same forms, and go through the same checks.
+  var selected = '';
+  var grid = document.getElementById('mapaGrid');
+  var panel = document.getElementById('selecionado');
+  function cardFor(ip) {
+    return cards.filter(function (c) { return c.dataset.ip === ip; })[0];
+  }
+  function markSelected() {
+    document.querySelectorAll('#mapaSVG .node').forEach(function (n) {
+      n.classList.toggle('sel', n.dataset.ip === selected);
+    });
+  }
+  function select(ip, scrollToMap) {
+    var card = cardFor(ip);
+    if (!card) return;
+    selected = ip;
+    var copy = card.cloneNode(true);
+    copy.classList.remove('nomatch', 'flash');
+    panel.innerHTML = '<div class="sel-head"><span>Selecionado no mapa</span>' +
+      '<span><button type="button" data-acao="lista" title="Mostrar na lista">↓</button>' +
+      '<button type="button" data-acao="fechar" title="Fechar">✕</button></span></div>';
+    panel.appendChild(copy);
+    grid.classList.add('has-sel');
+    markSelected();
+    if (scrollToMap) grid.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+  function unselect() {
+    selected = ''; panel.innerHTML = ''; grid.classList.remove('has-sel'); markSelected();
+  }
+  panel.addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-acao]');
+    if (!b) return;
+    if (b.dataset.acao === 'fechar') return unselect();
+    var card = cardFor(selected);
+    if (card) {
+      busca.value = ''; applySearch();
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      card.classList.add('flash');
+      setTimeout(function () { card.classList.remove('flash'); }, 1500);
+    }
+  });
+  // listeners live on the container, because the SVG inside is replaced
+  // every few seconds by the refresh below
+  var mapa = document.getElementById('mapaSVG');
+  mapa.addEventListener('click', function (e) {
+    var n = e.target.closest('.node');
+    if (n) { n.dataset.ip === selected ? unselect() : select(n.dataset.ip, false); }
+  });
+  mapa.addEventListener('keydown', function (e) {
+    var n = e.target.closest('.node');
+    if (n && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); select(n.dataset.ip, false); }
+  });
+
   setInterval(function () {
     fetch('/mapa').then(function (r) { return r.text(); }).then(function (svg) {
-      document.getElementById('mapaSVG').innerHTML = svg;
+      mapa.innerHTML = svg;
+      applySearch();
+      markSelected();
     });
   }, 8000);
+  applySearch();
 </script>
 </body>
 </html>`,

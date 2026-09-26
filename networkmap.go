@@ -59,6 +59,16 @@ func nodeTooltip(r deviceResult) string {
 	return html.EscapeString(strings.Join(parts, " · "))
 }
 
+// nodeOpen starts a device's group in the map. The data attributes are
+// what the page's script hangs on: data-ip ties the node to its card in
+// the list, so a click can bring up that card's buttons, and data-busca
+// is the same search text the card carries, so the search box can dim
+// the nodes that do not match.
+func nodeOpen(r deviceResult) string {
+	return fmt.Sprintf(`<g class="node" data-ip="%s" data-busca="%s" tabindex="0" role="button" aria-label="%s"><title>%s</title>`,
+		html.EscapeString(r.IP), searchText(r), nodeTooltip(r), nodeTooltip(r))
+}
+
 // The nodes sit on an arc below the router (15° to 165° from the x axis —
 // in screen coordinates that runs from the bottom-right corner to the
 // bottom-left one, through "straight down"), spread over concentric rings:
@@ -215,7 +225,7 @@ func networkMapSVG(network *networkInfo, results []deviceResult) string {
 		p := positions[i]
 		x := gwX + p.radius*math.Cos(p.angle)
 		y := float64(gwY) + p.radius*math.Sin(p.angle)
-		fmt.Fprintf(&svg, `<g><title>%s</title>`, nodeTooltip(r))
+		svg.WriteString(nodeOpen(r))
 		fmt.Fprintf(&svg, `<circle cx="%.1f" cy="%.1f" r="%.0f" fill="var(--risk-%s)" stroke="var(--surface)" stroke-width="2"/>`,
 			x, y, l.nodeRadius, riskSlug[r.Risk])
 		fmt.Fprintf(&svg, `<text x="%.1f" y="%.1f" text-anchor="middle" font-size="%.0f">%s</text>`,
@@ -244,7 +254,7 @@ func networkMapSVG(network *networkInfo, results []deviceResult) string {
 		for i, r := range isolated {
 			x := qx + 56 + float64(i%2)*98
 			y := qy + 56 + float64(i/2)*66
-			fmt.Fprintf(&svg, `<g><title>%s</title>`, nodeTooltip(r))
+			svg.WriteString(nodeOpen(r))
 			fmt.Fprintf(&svg, `<circle cx="%.1f" cy="%.1f" r="17" fill="var(--risk-alto)" stroke="var(--surface)" stroke-width="2"/><text x="%.1f" y="%.1f" text-anchor="middle" font-size="13">🔒</text>`, x, y, x, y+5)
 			fmt.Fprintf(&svg, `<text x="%.1f" y="%.1f" text-anchor="middle" font-size="10" fill="var(--ink-2)">%s</text>`, x, y+30, shortLabel(r))
 			fmt.Fprintf(&svg, `<text x="%.1f" y="%.1f" text-anchor="middle" font-size="9" fill="var(--ink-3)">🚫 %d</text></g>`, x, y+42, r.BlockedPackets)
