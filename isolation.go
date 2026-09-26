@@ -274,6 +274,12 @@ func isolateDevice(network *networkInfo, targetIP net.IP, targetMAC net.Hardware
 	ip := targetIP.String()
 	orderedAt := time.Now()
 
+	// checked here rather than in the handlers, so the dashboard, the
+	// agent API and the admission policy all go through it
+	if err := forbiddenTarget(network, targetIP, targetMAC); err != nil {
+		return err
+	}
+
 	isolationsMu.Lock()
 	if _, alreadyActive := isolations[ip]; alreadyActive {
 		isolationsMu.Unlock()

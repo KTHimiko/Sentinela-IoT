@@ -117,14 +117,18 @@ func main() {
 		}
 	}
 
-	// In agent mode the dashboard is bound to localhost and only the API
-	// is published on the network. The dashboard has no authentication of
-	// its own — it was written for someone sitting at the machine — so
-	// making its port reachable would hand the "isolate" button to anyone
-	// on the agent's LAN.
-	dashboardAddr := ":" + port
+	// The dashboard is bound to localhost: it has no authentication of its
+	// own — it was written for someone sitting at the machine — so making
+	// its port reachable would hand the "isolate" button to anyone on the
+	// LAN. PAINEL_NA_REDE opts out, for showing it on another screen, and
+	// is refused in agent mode, where only the token-protected API should
+	// be on the network.
+	dashboardAddr := "127.0.0.1:" + port
+	if os.Getenv("PAINEL_NA_REDE") == "1" && mode != modeAgent {
+		dashboardAddr = ":" + port
+		fmt.Println("⚠️  PAINEL_NA_REDE=1: o painel está aberto pra rede inteira, sem senha — qualquer um nela pode isolar dispositivos.")
+	}
 	if mode == modeAgent {
-		dashboardAddr = "127.0.0.1:" + port
 
 		apiPort := defaultAPIPort
 		if v := os.Getenv("PORTA_API"); v != "" {
@@ -159,7 +163,7 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("Dashboard rodando em http://localhost:%s\n", port)
-	if err := http.Serve(listener, nil); err != nil {
+	if err := http.Serve(listener, dashboardGuard(http.DefaultServeMux)); err != nil {
 		fmt.Println("O dashboard parou:", err)
 		os.Exit(1)
 	}

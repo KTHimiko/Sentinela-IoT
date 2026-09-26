@@ -83,6 +83,12 @@ sudo setcap cap_net_raw,cap_net_admin=eip ./immunegate
 O painel sobe em <http://localhost:8090>. Não há configuração a editar: a
 interface, a faixa de endereços e o gateway são descobertos sozinhos.
 
+O painel não tem senha, então só escuta em `127.0.0.1`: quem está na
+rede não alcança o botão de isolar. Pedidos vindos de outro site (um
+formulário que tente postar em `localhost:8090/isolar`) e nomes de host
+que não sejam IP ou `localhost` (DNS rebinding) são recusados, e o
+gateway e a própria máquina nunca podem ser isolados.
+
 ## Configuração
 
 Tudo por variável de ambiente, e todas têm padrão utilizável.
@@ -90,6 +96,7 @@ Tudo por variável de ambiente, e todas têm padrão utilizável.
 | Variável | Padrão | Para que serve |
 |---|---|---|
 | `PORTA` | `8090` | Porta do painel web |
+| `PAINEL_NA_REDE` | — | `1` abre o painel para a rede toda, **sem senha**. Ignorada em modo agente |
 | `INTERVALO_SEGUNDOS` | `20` | Intervalo entre varreduras |
 | `REDES_EXTRAS` | — | Sub-redes vizinhas a observar, separadas por vírgula (`192.168.3.0/24`). Recusa faixas maiores que /22 |
 | `POLITICA_NAC` | `off` | `off`, `simular` ou `aplicar` — ver abaixo |

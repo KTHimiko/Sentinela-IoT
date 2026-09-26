@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"html"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -116,6 +117,13 @@ func applyPolicy(network *networkInfo, results []deviceResult) {
 
 	for _, r := range results {
 		if r.Isolated || r.Agent != "" {
+			continue
+		}
+		// the router nearly always exposes a risky admin port; without this
+		// the simulation would report it as a candidate and enforcement
+		// would log a failure for it on every scan
+		mac, _ := net.ParseMAC(r.MAC)
+		if forbiddenTarget(network, net.ParseIP(r.IP), mac) != nil {
 			continue
 		}
 		v := evaluateAdmission(r)

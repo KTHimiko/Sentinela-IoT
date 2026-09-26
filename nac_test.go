@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"testing"
 	"time"
 )
@@ -74,7 +75,7 @@ func TestPolicyNeverActsWhileLearning(t *testing.T) {
 	}
 
 	// an unknown device that the policy would otherwise isolate
-	applyPolicy(nil, []deviceResult{{IP: "192.168.0.77", MAC: "FF:FF:FF:FF:FF:FF", Risk: "alto"}})
+	applyPolicy(&networkInfo{}, []deviceResult{{IP: "192.168.0.77", MAC: "FF:FF:FF:FF:FF:FF", Risk: "alto"}})
 
 	if n := countEvents("nac_negado"); n != 0 {
 		t.Errorf("nada deveria ser isolado durante o aprendizado, obtive %d", n)
@@ -94,9 +95,9 @@ func TestPolicySimulateRecordsWithoutBlocking(t *testing.T) {
 	historyInMemory = nil
 	historyMu.Unlock()
 
-	// network is nil on purpose: in simulation nothing may touch it, and
-	// a nil dereference here would prove the opposite
-	applyPolicy(nil, []deviceResult{
+	// an empty network on purpose: in simulation nothing may be isolated,
+	// and with no interface any attempt would fail loudly
+	applyPolicy(&networkInfo{}, []deviceResult{
 		{IP: "192.168.0.10", MAC: "AA:AA:AA:AA:AA:AA", Risk: "baixo"}, // passa
 		{IP: "192.168.0.77", MAC: "FF:FF:FF:FF:FF:FF", Risk: "baixo"}, // desconhecido
 	})
@@ -119,11 +120,30 @@ func TestPolicySkipsAlreadyIsolated(t *testing.T) {
 	historyInMemory = nil
 	historyMu.Unlock()
 
-	applyPolicy(nil, []deviceResult{
+	applyPolicy(&networkInfo{}, []deviceResult{
 		{IP: "192.168.0.77", MAC: "FF:FF:FF:FF:FF:FF", Risk: "alto", Isolated: true},
 	})
 	if n := countEvents("nac_simulado"); n != 0 {
 		t.Errorf("quem já está isolado não deveria ser reavaliado, obtive %d", n)
+	}
+}
+
+// The router nearly always exposes a risky admin port, so without the
+// forbidden-target check it would be the first thing the policy denies.
+func TestPolicyNeverTargetsGateway(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("POLITICA_NAC", "simular")
+	t.Setenv("POLITICA_APRENDIZADO_MINUTOS", "0")
+	configurePolicy()
+	withKnown()
+	historyMu.Lock()
+	historyInMemory = nil
+	historyMu.Unlock()
+
+	n := &networkInfo{Gateway: net.ParseIP("192.168.0.1")}
+	applyPolicy(n, []deviceResult{{IP: "192.168.0.1", MAC: "AA:BB:CC:00:00:01", Risk: "alto"}})
+	if got := countEvents("nac_simulado"); got != 0 {
+		t.Errorf("o gateway não deveria ser candidato a isolamento, obtive %d", got)
 	}
 }
 
